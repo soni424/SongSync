@@ -81,6 +81,7 @@
     <plurals name="songs_count">
         <item quantity="one">%1$d píseň</item>
         <item quantity="few">%1$d písně</item>
+        <item quantity="many">%1$d písní</item>
         <item quantity="other">%1$d písní</item>
     </plurals>
     <string name="lead_developer">Vedoucí vývojář</string>
@@ -131,6 +132,7 @@
     <plurals name="this_will_download_lyrics_for_all_songs">
         <item quantity="one">Toto stáhne text pro jednu píseň. Stávající texty písní budou nahrazeny novými. Toto může být méně přesné než stahování textů jednom po druhém. Opravdu chcete pokračovat?</item>
         <item quantity="few">Toto stáhne text pro %1$d písně. Stávající texty písní budou nahrazeny novými. Toto může být méně přesné než stahování textů jednom po druhém. Opravdu chcete pokračovat?</item>
+        <item quantity="many">Toto stáhne text pro %1$d písní. Stávající texty písní budou nahrazeny novými. Toto může být méně přesné než stahování textů jednom po druhém. Opravdu chcete pokračovat?</item>
         <item quantity="other">Toto stáhne text pro %1$d písní. Stávající texty písní budou nahrazeny novými. Toto může být méně přesné než stahování textů jednom po druhém. Opravdu chcete pokračovat?</item>
     </plurals>
     <string name="clear">Vymazat</string>

@@ -26,6 +26,9 @@ import pl.lambada.songsync.ui.components.SongCard
 import pl.lambada.songsync.ui.screens.lyricsFetch.LyricsFetchState
 import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.util.applyOffsetToLyrics
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsTiming
+import pl.lambada.songsync.ui.userMessage
+import androidx.compose.ui.platform.LocalContext
 
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -47,11 +50,14 @@ fun SharedTransitionScope.SuccessContent(
     disableMarquee: Boolean,
     allowTryingAgain: Boolean,
     selectedProvider: Providers,
+    lyricsTiming: LyricsTiming?,
     onExpandProvidersRequest: () -> Unit,
 ) = Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    val context = LocalContext.current
     Spacer(modifier = Modifier.height(10.dp))
     CloudProviderTitle(
         selectedProvider = selectedProvider,
+        lyricsTiming = lyricsTiming,
         onExpandProvidersRequest = onExpandProvidersRequest,
     )
     Spacer(modifier = Modifier.height(6.dp))
@@ -116,7 +122,13 @@ fun SharedTransitionScope.SuccessContent(
                     originalLanguage = result.originalLanguage,
                 )
 
-                is LyricsFetchState.Failed -> Text(stringResource(R.string.this_track_has_no_lyrics))
+                is LyricsFetchState.Failed -> Text(
+                    if (it.exception is pl.lambada.songsync.data.remote.lyrics_providers.LyricsLookupException) {
+                        it.exception.failure.userMessage(context)
+                    } else {
+                        stringResource(R.string.this_track_has_no_lyrics)
+                    }
+                )
 
                 LyricsFetchState.Pending -> CircularProgressIndicator()
             }

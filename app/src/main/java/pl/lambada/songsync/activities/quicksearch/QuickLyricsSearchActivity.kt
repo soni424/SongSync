@@ -5,17 +5,19 @@ import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.ModalBottomSheetDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 import coil.ImageLoader
 import coil.disk.DiskCache
 import coil.memory.MemoryCache
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import pl.lambada.songsync.R
 import pl.lambada.songsync.activities.quicksearch.viewmodel.QuickLyricsSearchViewModel
 import pl.lambada.songsync.activities.quicksearch.viewmodel.QuickLyricsSearchViewModelFactory
@@ -23,28 +25,32 @@ import pl.lambada.songsync.data.UserSettingsController
 import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
 import pl.lambada.songsync.ui.theme.SongSyncTheme
 import pl.lambada.songsync.util.dataStore
+import pl.lambada.songsync.util.networking.hasValidatedInternet
 
 class QuickLyricsSearchActivity : AppCompatActivity() {
-    private val lyricsProviderService = LyricsProviderService()
+    private lateinit var lyricsProviderService: LyricsProviderService
 
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lyricsProviderService = LyricsProviderService { hasValidatedInternet() }
 
-        val userSettingsController = UserSettingsController(dataStore)
-        val viewModel: QuickLyricsSearchViewModel by viewModels {
-            QuickLyricsSearchViewModelFactory(userSettingsController, lyricsProviderService)
-        }
-        activityImageLoader = ImageLoader.Builder(this)
+        lifecycleScope.launch {
+            val userSettingsController = UserSettingsController.create(dataStore)
+            val viewModel = ViewModelProvider(
+                this@QuickLyricsSearchActivity,
+                QuickLyricsSearchViewModelFactory(userSettingsController, lyricsProviderService),
+            )[QuickLyricsSearchViewModel::class.java]
+            activityImageLoader = ImageLoader.Builder(this@QuickLyricsSearchActivity)
             .memoryCache {
-                MemoryCache.Builder(this)
+                MemoryCache.Builder(this@QuickLyricsSearchActivity)
                     .maxSizePercent(0.35)
                     .build()
             }
             .diskCache {
                 DiskCache.Builder()
-                    .directory(this.cacheDir.resolve("image_cache"))
+                    .directory(this@QuickLyricsSearchActivity.cacheDir.resolve("image_cache"))
                     .maxSizeBytes(7 * 1024 * 1024)
                     .build()
             }
@@ -55,30 +61,31 @@ class QuickLyricsSearchActivity : AppCompatActivity() {
             .dispatcher(Dispatchers.IO)
             .build()
 
-        enableEdgeToEdge()
-        handleShareIntent(intent, sendEvent = viewModel::onEvent)
+            enableEdgeToEdge()
+            handleShareIntent(intent, sendEvent = viewModel::onEvent)
 
-        setContent {
-            val sheetState = rememberModalBottomSheetState()
-            val viewModelState = viewModel.state.collectAsStateWithLifecycle()
-            SongSyncTheme(pureBlack = userSettingsController.pureBlack) {
-                ModalBottomSheet(
-                    sheetState = sheetState,
-                    properties = ModalBottomSheetDefaults.properties,
-                    onDismissRequest = { finish() }
-                ) {
-                    QuickLyricsSearchPage(
-                        state = viewModelState,
-                        onSendLyrics = { lyrics ->
-                            val resultIntent = Intent().apply {
-                                action = Intent.ACTION_SEND
-                                putExtra("lyrics", lyrics)
-                                type = "text/plain"
+            setContent {
+                val sheetState = rememberModalBottomSheetState()
+                val viewModelState = viewModel.state.collectAsStateWithLifecycle()
+                SongSyncTheme(pureBlack = userSettingsController.pureBlack) {
+                    ModalBottomSheet(
+                        sheetState = sheetState,
+                        properties = ModalBottomSheetDefaults.properties,
+                        onDismissRequest = { finish() }
+                    ) {
+                        QuickLyricsSearchPage(
+                            state = viewModelState,
+                            onSendLyrics = { lyrics ->
+                                val resultIntent = Intent().apply {
+                                    action = Intent.ACTION_SEND
+                                    putExtra("lyrics", lyrics)
+                                    type = "text/plain"
+                                }
+                                setResult(RESULT_OK, resultIntent)
+                                finish()
                             }
-                            setResult(RESULT_OK, resultIntent)
-                            finish()
-                        }
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -118,6 +125,5 @@ class QuickLyricsSearchActivity : AppCompatActivity() {
 
     companion object {
         lateinit var activityImageLoader: ImageLoader
-        lateinit var userSettingsController: UserSettingsController
     }
 }

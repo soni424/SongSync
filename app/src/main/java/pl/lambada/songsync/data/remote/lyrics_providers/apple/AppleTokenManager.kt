@@ -2,8 +2,12 @@ package pl.lambada.songsync.data.remote.lyrics_providers.apple
 
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import pl.lambada.songsync.data.remote.lyrics_providers.ProviderRequestException
+import pl.lambada.songsync.data.remote.lyrics_providers.requireProviderSuccess
+import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.util.networking.Ktor.client
 
 class AppleTokenManager {
@@ -16,6 +20,7 @@ class AppleTokenManager {
 
             try {
                 val mainPageResponse = client.get("https://beta.music.apple.com")
+                mainPageResponse.requireProviderSuccess(Providers.APPLE)
                 val mainPageBody = mainPageResponse.bodyAsText()
 
                 val indexJsRegex = Regex("""/assets/index~[^/]+\.js""")
@@ -25,6 +30,7 @@ class AppleTokenManager {
                 val indexJsUri = indexJsMatch.value
 
                 val indexJsResponse = client.get("https://beta.music.apple.com$indexJsUri")
+                indexJsResponse.requireProviderSuccess(Providers.APPLE)
                 val indexJsBody = indexJsResponse.bodyAsText()
 
                 val tokenRegex = Regex("""eyJh([^"]*)""")
@@ -34,6 +40,10 @@ class AppleTokenManager {
                 val token = tokenMatch.value
                 cachedToken = token
                 return token
+            } catch (e: ProviderRequestException) {
+                throw e
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 throw Exception("Error fetching Apple Music token: ${e.message}", e)
             }

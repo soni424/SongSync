@@ -2,15 +2,15 @@ package pl.lambada.songsync.data.remote.lyrics_providers.others
 
 import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import io.ktor.client.request.parameter
+import pl.lambada.songsync.data.remote.lyrics_providers.requireProviderSuccess
+import pl.lambada.songsync.data.remote.lyrics_providers.isLikelyTrackMatch
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.others.LRCLibResponse
 import pl.lambada.songsync.util.EmptyQueryException
 import pl.lambada.songsync.util.networking.Ktor.client
 import pl.lambada.songsync.util.networking.Ktor.json
-import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
+import pl.lambada.songsync.util.Providers
 
 class LRCLibAPI {
     private val baseURL = "https://lrclib.net/api/"
@@ -21,31 +21,28 @@ class LRCLibAPI {
      * @return Search result as a SongInfo object.
      */
     suspend fun getSongInfo(query: SongInfo, offset: Int = 0): SongInfo? {
-        val search = withContext(Dispatchers.IO) {
-            URLEncoder.encode(
-                "${query.songName} ${query.artistName}",
-                StandardCharsets.UTF_8.toString()
-            )
-        }
+        val search = "${query.songName.orEmpty()} ${query.artistName.orEmpty()}".trim()
 
-        if (search == "+")
+        if (search.isBlank())
             throw EmptyQueryException()
 
-        val response = client.get(
-            baseURL + "search?q=$search"
-        )
+        val response = client.get(baseURL + "search") { parameter("q", search) }
+        response.requireProviderSuccess(Providers.LRCLIB)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
 
-        if (responseBody == "[]" || response.status.value !in 200..299)
+        if (responseBody == "[]")
             return null
 
         val json = json.decodeFromString<List<LRCLibResponse>>(responseBody)
 
-        val song = try {
-            json[offset]
-        } catch (e: IndexOutOfBoundsException) {
-            return null
-        }
+        val song = json.drop(offset).firstOrNull { candidate ->
+            isLikelyTrackMatch(
+                query.songName,
+                query.artistName,
+                candidate.trackName,
+                candidate.artistName,
+            )
+        } ?: return null
 
         return SongInfo(
             songName = song.trackName,
@@ -60,15 +57,19 @@ class LRCLibAPI {
      * @return The synced lyrics as a string.
      */
     suspend fun getSyncedLyrics(id: Int): String? {
+        return getLyrics(id)?.syncedLyrics
+    }
+
+    suspend fun getLyrics(id: Int): LRCLibResponse? {
         val response = client.get(
             baseURL + "get/$id"
         )
+        response.requireProviderSuccess(Providers.LRCLIB)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
 
-        if (response.status.value !in 200..299 || responseBody == "[]")
+        if (responseBody == "[]")
             return null
 
-        val json = json.decodeFromString<LRCLibResponse>(responseBody)
-        return json.syncedLyrics
+        return json.decodeFromString<LRCLibResponse>(responseBody)
     }
 }

@@ -65,11 +65,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+    lint {
+        // Compose's detector is binary-incompatible with this AGP/Kotlin combination.
+        // Keep all other lint checks enabled until the upstream detector is compatible.
+        disable += "SuspiciousModifierThen"
+    }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.7.0")
-    implementation("androidx.compose.ui:ui:1.0.5")
     implementation(libs.core.ktx)
     implementation(libs.lifecycle.runtime.ktx)
     implementation(libs.activity.compose)
@@ -91,10 +94,10 @@ dependencies {
     implementation(libs.taglib)
     implementation(libs.kotlin.onetimepassword)
     implementation(libs.datastore.preferences)
-    implementation(libs.ui.tooling) //NOT RECOMMENDED
     implementation(libs.ui.tooling.preview) //NOT RECOMMENDED
-    implementation("io.ktor:ktor-client-core:2.3.4")
-    implementation("io.ktor:ktor-client-cio:2.3.4")
-    implementation("io.ktor:ktor-client-content-negotiation:2.3.4")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.4")
+    implementation(libs.ktor.content.negotiation)
+    implementation(libs.ktor.serialization.json)
+    debugImplementation(libs.ui.tooling)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

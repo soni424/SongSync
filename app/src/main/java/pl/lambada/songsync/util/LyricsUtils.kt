@@ -15,11 +15,16 @@ import com.kyant.taglib.TagLib
 import pl.lambada.songsync.R
 import pl.lambada.songsync.domain.model.Song
 import pl.lambada.songsync.domain.model.SongInfo
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsFailure
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsLookupOutcome
+import pl.lambada.songsync.data.remote.lyrics_providers.ProviderResult
 import pl.lambada.songsync.ui.screens.home.HomeViewModel
 import pl.lambada.songsync.util.ext.sanitize
 import pl.lambada.songsync.util.ext.toLrcFile
 import java.io.File
 import java.io.FileNotFoundException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 
 fun generateLrcContent(
     song: SongInfo,
@@ -56,11 +61,15 @@ fun writeLyricsToFile(
     context: Context,
     song: Song,
     sdCardPath: String?
-) {
-    try {
-        file?.writeText(lrcContent)
+): Boolean {
+    if (file == null) return false
+    return try {
+        file.writeText(lrcContent)
+        file.isFile
     } catch (e: FileNotFoundException) {
         handleFileNotFoundException(context, song, file, lrcContent, sdCardPath)
+    } catch (e: Exception) {
+        false
     }
 }
 
@@ -70,35 +79,29 @@ fun handleFileNotFoundException(
     file: File?,
     lrc: String,
     sdCardPath: String?
-) {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && !song.filePath!!.contains("/storage/emulated/0")) {
-        val sd = context.externalCacheDirs[1].absolutePath.substring(
-            0,
-            context.externalCacheDirs[1].absolutePath.indexOf("/Android/data")
-        )
-        val path = file?.absolutePath?.substringAfter(sd)?.split("/")?.dropLast(1)
+): Boolean {
+    val songPath = song.filePath ?: return false
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R && !songPath.contains("/storage/emulated/0")) {
+        val externalCache = context.externalCacheDirs.getOrNull(1) ?: return false
+        val sd = externalCache.absolutePath.substringBefore("/Android/data")
+        val path = file?.absolutePath?.substringAfter(sd)?.split("/")?.dropLast(1) ?: return false
         var sdCardFiles = DocumentFile.fromTreeUri(context, Uri.parse(sdCardPath))
-        for (element in path!!) {
-            for (sdCardFile in sdCardFiles!!.listFiles()) {
+        for (element in path) {
+            val currentDirectory = sdCardFiles ?: return false
+            for (sdCardFile in currentDirectory.listFiles()) {
                 if (sdCardFile.name == element) {
                     sdCardFiles = sdCardFile
                 }
             }
         }
-        sdCardFiles?.listFiles()?.forEach {
-            if (it.name == file.name) {
-                it.delete()
-                return@forEach
-            }
-        }
-        sdCardFiles?.createFile("text/lrc", file.name)?.let {
-            val outputStream = context.contentResolver.openOutputStream(it.uri)
-            outputStream?.write(lrc.toByteArray())
-            outputStream?.close()
-        }
-    } else {
-        error("Unable to handle FileNotFoundException")
+        sdCardFiles?.listFiles()?.firstOrNull { it.name == file.name }?.delete()
+        val destination = sdCardFiles?.createFile("text/lrc", file.name) ?: return false
+        context.contentResolver.openOutputStream(destination.uri)?.use { outputStream ->
+            outputStream.write(lrc.toByteArray())
+        } ?: return false
+        return destination.exists()
     }
+    return false
 }
 
 @SuppressLint("Range")
@@ -174,13 +177,17 @@ fun handleSecurityException(
 /**
  * Defines possible provider choices
  */
-enum class Providers(val displayName: String, val hasWordByWord: Boolean) {
+enum class Providers(
+    val displayName: String,
+    val hasWordByWord: Boolean,
+    val isAvailable: Boolean = true,
+) {
     APPLE("Apple Music", true),
     LRCLIB("LRCLib", false),
     SPOTIFY("Spotify", false),
-    MUSIXMATCH("Musixmatch", false),
+    MUSIXMATCH("Musixmatch", false, false),
     QQMUSIC("QQ Music", true),
-    NETEASE("Netease", false) { val inf = 0 },
+    NETEASE("Netease", false, false),
 }
 
 // only for invoking the task and handling and reporting progress
@@ -195,33 +202,29 @@ suspend fun downloadLyrics(
     var successCount = 0
     var noLyricsCount = 0
     var failedCount = 0
-    var consecutiveNotFound = 0
+    var rateLimitSeen = false
+
+    if (songs.isEmpty()) {
+        onDownloadComplete()
+        return
+    }
 
     songs.forEach { song ->
-        downloadLyricsForSong(
+        currentCoroutineContext().ensureActive()
+        val rateLimited = downloadLyricsForSong(
             song,
             viewModel,
             context,
-            onFailedSongInfoResponse = {
-                failedCount++
-                consecutiveNotFound++
-                if (consecutiveNotFound >= 5) onRateLimitReached()
-            },
-            onSuccessfulSongInfoResponse = { consecutiveNotFound = 0 },
-            onFailedLyricsResponse = {
-                if (it is NullPointerException || it is FileNotFoundException)
-                    noLyricsCount++
-                else {
-                    failedCount++
-                    consecutiveNotFound++
-                }
-            },
-            onLyricsSaved = { successCount++ }
+            onNoLyrics = { noLyricsCount++ },
+            onFailure = { failedCount++ },
+            onLyricsSaved = { successCount++ },
         )
 
         onProgressUpdate(successCount, noLyricsCount, failedCount)
+        if (rateLimited) rateLimitSeen = true
     }
 
+    if (rateLimitSeen) onRateLimitReached()
     onDownloadComplete()
 }
 
@@ -230,56 +233,47 @@ private suspend fun downloadLyricsForSong(
     song: Song,
     viewModel: HomeViewModel,
     context: Context,
-    onFailedSongInfoResponse: (Throwable) -> Unit,
-    onSuccessfulSongInfoResponse: () -> Unit,
-    onFailedLyricsResponse: (Throwable) -> Unit,
+    onNoLyrics: () -> Unit,
+    onFailure: () -> Unit,
     onLyricsSaved: () -> Unit
-) {
-    runCatching {
-        viewModel
-            .getSongInfo(SongInfo(song.title, song.artist))
-            ?: throw NullPointerException("Song info result is null")
-    }
-        .onFailure(onFailedSongInfoResponse)
-        .onSuccess { songInfo ->
-            onSuccessfulSongInfoResponse()
-
-            runCatching {
-                viewModel
-                    .getSyncedLyrics(
-                        songInfo.songName!!,
-                        songInfo.artistName!!
-                    )
-                    ?: throw NullPointerException("Lyrics result is null")
+): Boolean {
+    return when (val outcome = viewModel.lookupLyrics(song.title, song.artist)) {
+        is LyricsLookupOutcome.Failed -> {
+            val rateLimited = outcome.attempts.any { attempt ->
+                (attempt.result as? ProviderResult.Failure)?.reason is LyricsFailure.RateLimited
             }
-                .onFailure(onFailedLyricsResponse)
-                .onSuccess {
-                    val lrcContent = formatLyrics(
-                        songInfo,
-                        it,
-                        context,
-                        viewModel.userSettingsController.directlyModifyTimestamps
-                    )
-
-                    if (viewModel.userSettingsController.embedLyricsIntoFiles) {
-                        embedLyricsInFile(
-                            context,
-                            song.filePath ?: throw NullPointerException("File path is null"),
-                            lrcContent
-                        )
-                    } else {
-                        writeLyricsToFile(
-                            song.filePath.toLrcFile(),
-                            lrcContent,
-                            context,
-                            song,
-                            viewModel.userSettingsController.sdCardPath
-                        )
-                    }
-
-                    onLyricsSaved()
-                }
+            when {
+                outcome.failure is LyricsFailure.NoLyrics -> onNoLyrics()
+                rateLimited -> onFailure()
+                else -> onFailure()
+            }
+            rateLimited
         }
+        is LyricsLookupOutcome.Success -> {
+            val lrcContent = formatLyrics(
+                outcome.document.song,
+                outcome.document.content,
+                context,
+                viewModel.userSettingsController.directlyModifyTimestamps,
+            )
+
+            val saved = if (viewModel.userSettingsController.embedLyricsIntoFiles) {
+                val filePath = song.filePath
+                filePath != null && embedLyricsInFile(context, filePath, lrcContent)
+            } else {
+                writeLyricsToFile(
+                    song.filePath.toLrcFile(),
+                    lrcContent,
+                    context,
+                    song,
+                    viewModel.userSettingsController.sdCardPath,
+                )
+            }
+
+            if (saved) onLyricsSaved() else onFailure()
+            false
+        }
+    }
 }
 
 private fun formatLyrics(
@@ -304,25 +298,26 @@ fun saveToExternalPath(
     lrc: String,
     fileName: String,
     newLyricsFilePath: String?
-) {
-    val sd = context.externalCacheDirs[1].absolutePath.substringBefore("/Android/data")
+): Boolean {
+    val sd = context.externalCacheDirs.getOrNull(1)?.absolutePath
+        ?.substringBefore("/Android/data") ?: return false
     val path = sourceFilePath
         ?.toLrcFile()
         ?.absolutePath
         ?.substringAfter(sd)
         ?.split("/")
         ?.dropLast(1)
-        ?: error("path was null when trying to save to sd card")
+        ?: return false
     var sdCardFiles = DocumentFile.fromTreeUri(context, Uri.parse(newLyricsFilePath))
     path.forEach { element ->
         sdCardFiles = sdCardFiles?.listFiles()?.firstOrNull { it.name == element }
     }
     sdCardFiles?.listFiles()?.firstOrNull { it.name == fileName }?.delete()
-    sdCardFiles?.createFile("text/lrc", fileName)?.let {
-        context.contentResolver.openOutputStream(it.uri)?.use { outputStream ->
-            outputStream.write(lrc.toByteArray())
-        }
-    }
+    val destination = sdCardFiles?.createFile("text/lrc", fileName) ?: return false
+    context.contentResolver.openOutputStream(destination.uri)?.use { outputStream ->
+        outputStream.write(lrc.toByteArray())
+    } ?: return false
+    return destination.exists()
 }
 
 /**
@@ -335,11 +330,16 @@ fun saveToExternalPath(
 fun applyOffsetToLyrics(lyrics: String, offset: Int): String {
     val timestampRegex = Regex("""[\[<](\d+):(\d+)\.(\d+)[]>]""")
 
-    fun applyOffset(minute: Int, second: Int, millisecond: Int): String {
-        val totalMilliseconds = (minute * 60 * 1000) + (second * 1000) + (millisecond * 10) + offset
+    fun applyOffset(minute: Int, second: Int, fraction: String): String {
+        val millisecond = when (fraction.length) {
+            1 -> fraction.toInt() * 100
+            2 -> fraction.toInt() * 10
+            else -> fraction.take(3).padEnd(3, '0').toInt()
+        }
+        val totalMilliseconds = (minute * 60 * 1000) + (second * 1000) + millisecond + offset
         if (totalMilliseconds < 0) return "00:00.000" // Prevent negative times
 
-        val newMinutes = (totalMilliseconds / 60000) % 60
+        val newMinutes = totalMilliseconds / 60000
         val newSeconds = (totalMilliseconds / 1000) % 60
         val newMilliseconds = (totalMilliseconds % 1000)
 
@@ -352,12 +352,11 @@ fun applyOffsetToLyrics(lyrics: String, offset: Int): String {
         val (minuteStr, secondStr, millisecondStr) = matchResult.destructured
         val minute = minuteStr.toInt()
         val second = secondStr.toInt()
-        val millisecond = millisecondStr.toInt()
 
         val startChar = matchResult.value[0]
         val endChar = if (startChar == '[') ']' else '>'
 
-        "${startChar}${applyOffset(minute, second, millisecond)}$endChar"
+        "${startChar}${applyOffset(minute, second, millisecondStr)}$endChar"
     }
 }
 
@@ -372,7 +371,12 @@ fun parseLyrics(lyrics: String): List<Pair<String, String>> {
         val startChar = line[0]
         val endChar = if (startChar == '[') ']' else '>'
 
-        val timestamp = "${minute}:${second}.${millisecond.padStart(3, '0')}"
+        val normalizedFraction = when (millisecond.length) {
+            1 -> millisecond + "00"
+            2 -> millisecond + "0"
+            else -> millisecond.take(3)
+        }
+        val timestamp = "${minute}:${second}.$normalizedFraction"
         val text = line.substringAfter(endChar).trim()
 
         timestamp to text

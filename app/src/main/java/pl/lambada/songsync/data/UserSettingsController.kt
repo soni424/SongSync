@@ -6,151 +6,159 @@ import androidx.compose.runtime.setValue
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
+import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import pl.lambada.songsync.domain.model.SortOrders
 import pl.lambada.songsync.domain.model.SortValues
 import pl.lambada.songsync.util.Providers
-import pl.lambada.songsync.util.get
-import pl.lambada.songsync.util.set
 
-class UserSettingsController(private val dataStore: DataStore<Preferences>) {
-    var embedLyricsIntoFiles by mutableStateOf(dataStore.get(embedKey, false))
+class UserSettingsController private constructor(
+    private val dataStore: DataStore<Preferences>,
+    initial: Preferences,
+) {
+    private val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val storedProvider = Providers.entries
+        .find { it.displayName == initial[selectedProviderKey] }
+        ?: Providers.SPOTIFY
+
+    var embedLyricsIntoFiles by mutableStateOf(initial[embedKey] ?: false)
         private set
-
-    var passedInit by mutableStateOf(dataStore.get(passedInitKey, false))
+    var passedInit by mutableStateOf(initial[passedInitKey] ?: false)
         private set
-
     var selectedProvider by mutableStateOf(
-        Providers.entries
-            .find { it.displayName == dataStore.get(selectedProviderKey, Providers.SPOTIFY.displayName) }!!
+        storedProvider.takeIf(Providers::isAvailable) ?: Providers.LRCLIB
     )
         private set
-
     var blacklistedFolders by mutableStateOf(
-        dataStore.get(blacklistedFoldersKey, "").split(",")
+        initial[blacklistedFoldersKey].orEmpty().split(',').filter(String::isNotBlank)
     )
         private set
-
-    var hideLyrics by mutableStateOf(dataStore.get(hideLyricsKey, false))
+    var hideLyrics by mutableStateOf(initial[hideLyricsKey] ?: false)
         private set
-
-    var includeTranslation by mutableStateOf(dataStore.get(includeTranslationKey, false))
+    var includeTranslation by mutableStateOf(initial[includeTranslationKey] ?: false)
         private set
-
-    var includeRomanization by mutableStateOf(dataStore.get(includeRomanizationKey, false))
+    var includeRomanization by mutableStateOf(initial[includeRomanizationKey] ?: false)
         private set
-
-    var multiPersonWordByWord by mutableStateOf(dataStore.get(multiPersonWordByWordKey, true))
+    var multiPersonWordByWord by mutableStateOf(initial[multiPersonWordByWordKey] ?: true)
         private set
-
-    var unsyncedFallbackMusixmatch by mutableStateOf(dataStore.get(unsyncedFallbackMusixmatchKey, true))
+    var unsyncedFallbackMusixmatch by mutableStateOf(initial[unsyncedFallbackMusixmatchKey] ?: true)
         private set
-
-    var pureBlack by mutableStateOf(dataStore.get(pureBlackKey, false))
+    var pureBlack by mutableStateOf(initial[pureBlackKey] ?: false)
         private set
-
-    var disableMarquee by mutableStateOf(dataStore.get(disableMarqueeKey, false))
+    var disableMarquee by mutableStateOf(initial[disableMarqueeKey] ?: false)
         private set
-
-    var sdCardPath by mutableStateOf(dataStore.get(sdCardPathKey, null))
+    var sdCardPath by mutableStateOf(initial[sdCardPathKey])
         private set
-
-    var showPath by mutableStateOf(dataStore.get(showPathKey, false))
+    var showPath by mutableStateOf(initial[showPathKey] ?: false)
         private set
-
-    var directlyModifyTimestamps by mutableStateOf(dataStore.get(directlyModifyTimestampsKey, false))
+    var directlyModifyTimestamps by mutableStateOf(initial[directlyModifyTimestampsKey] ?: false)
         private set
-
     var sortOrder by mutableStateOf(
-        SortOrders.entries
-            .find { it.queryName == dataStore.get(sortOrderKey, SortOrders.ASCENDING.queryName) }!!
+        SortOrders.entries.find { it.queryName == initial[sortOrderKey] } ?: SortOrders.ASCENDING
+    )
+        private set
+    var sortBy by mutableStateOf(
+        SortValues.entries.find { it.name == initial[sortByKey] } ?: SortValues.TITLE
     )
         private set
 
-    var sortBy by mutableStateOf(
-        SortValues.entries
-            .find { it.name == dataStore.get(sortByKey, SortValues.TITLE.name) }!!
-    )
-        private set
+    init {
+        if (storedProvider != selectedProvider) persist(selectedProviderKey, selectedProvider.displayName)
+    }
 
     fun updateEmbedLyrics(to: Boolean) {
-        dataStore.set(embedKey, to)
         embedLyricsIntoFiles = to
+        persist(embedKey, to)
     }
 
     fun updatePassedInit(to: Boolean) {
-        dataStore.set(passedInitKey, to)
         passedInit = to
+        persist(passedInitKey, to)
     }
 
     fun updateSelectedProviders(to: Providers) {
-        dataStore.set(selectedProviderKey, to.displayName)
+        if (!to.isAvailable) return
         selectedProvider = to
+        persist(selectedProviderKey, to.displayName)
     }
 
     fun updateBlacklistedFolders(to: List<String>) {
-        dataStore.set(blacklistedFoldersKey, to.joinToString(","))
         blacklistedFolders = to
+        persist(blacklistedFoldersKey, to.joinToString(","))
     }
 
     fun updateHideLyrics(to: Boolean) {
-        dataStore.set(hideLyricsKey, to)
         hideLyrics = to
+        persist(hideLyricsKey, to)
     }
 
     fun updateIncludeTranslation(to: Boolean) {
-        dataStore.set(includeTranslationKey, to)
         includeTranslation = to
+        persist(includeTranslationKey, to)
     }
 
     fun updateIncludeRomanization(to: Boolean) {
-        dataStore.set(includeRomanizationKey, to)
         includeRomanization = to
+        persist(includeRomanizationKey, to)
     }
 
     fun updateMultiPersonWordByWord(to: Boolean) {
-        dataStore.set(multiPersonWordByWordKey, to)
         multiPersonWordByWord = to
+        persist(multiPersonWordByWordKey, to)
     }
 
     fun updateUnsyncedFallbackMusixmatch(to: Boolean) {
-        dataStore.set(unsyncedFallbackMusixmatchKey, to)
         unsyncedFallbackMusixmatch = to
+        persist(unsyncedFallbackMusixmatchKey, to)
     }
 
     fun updateDisableMarquee(to: Boolean) {
-        dataStore.set(disableMarqueeKey, to)
         disableMarquee = to
+        persist(disableMarqueeKey, to)
     }
 
     fun updatePureBlack(to: Boolean) {
-        dataStore.set(pureBlackKey, to)
         pureBlack = to
+        persist(pureBlackKey, to)
     }
 
     fun updateSdCardPath(to: String) {
-        dataStore.set(sdCardPathKey, to)
         sdCardPath = to
+        persist(sdCardPathKey, to)
     }
 
     fun updateShowPath(to: Boolean) {
-        dataStore.set(showPathKey, to)
         showPath = to
+        persist(showPathKey, to)
     }
 
     fun updateDirectlyModifyTimestamps(to: Boolean) {
-        dataStore.set(directlyModifyTimestampsKey, to)
         directlyModifyTimestamps = to
+        persist(directlyModifyTimestampsKey, to)
     }
 
     fun updateSortOrder(to: SortOrders) {
-        dataStore.set(sortOrderKey, to.queryName)
         sortOrder = to
+        persist(sortOrderKey, to.queryName)
     }
 
     fun updateSortBy(to: SortValues) {
-        dataStore.set(sortByKey, to.name)
         sortBy = to
+        persist(sortByKey, to.name)
+    }
+
+    private fun <T> persist(key: Preferences.Key<T>, value: T) {
+        persistenceScope.launch { dataStore.edit { it[key] = value } }
+    }
+
+    companion object {
+        suspend fun create(dataStore: DataStore<Preferences>): UserSettingsController =
+            UserSettingsController(dataStore, dataStore.data.first())
     }
 }
 

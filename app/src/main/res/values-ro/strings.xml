@@ -73,6 +73,7 @@
     <string name="no_lyrics">Fără versuri: %1$d</string>
     <plurals name="this_will_download_lyrics_for_all_songs">
         <item quantity="one">Acest lucru va descărca versurile pentru o melodie. Versurile existente pentru melodii vor fi suprascrise cu altele noi. Acest lucru poate fi mai puțin precis decât descărcarea versurilor unul câte unul. Sunteți sigur că doriți să continuați?</item>
+        <item quantity="few">Acest lucru va descărca versurile pentru %1$d melodii. Versurile existente pentru melodii vor fi suprascrise cu altele noi. Acest lucru poate fi mai puțin precis decât descărcarea versurilor unul câte unul. Sunteți sigur că doriți să continuați?</item>
         <item quantity="other">Acest lucru va descărca versurile pentru %1$d melodii. Versurile existente pentru melodii vor fi suprascrise cu altele noi. Acest lucru poate fi mai puțin precis decât descărcarea versurilor unul câte unul. Sunteți sigur că doriți să continuați?</item>
     </plurals>
     <string name="invalid_query">Interogare invalidă</string>

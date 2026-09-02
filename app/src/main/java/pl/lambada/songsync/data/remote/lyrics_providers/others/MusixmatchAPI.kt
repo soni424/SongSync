@@ -4,6 +4,8 @@ import io.ktor.client.request.get
 import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import pl.lambada.songsync.data.remote.lyrics_providers.requireProviderSuccess
+import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.others.MusixmatchSearchResponse
 import pl.lambada.songsync.util.EmptyQueryException
@@ -12,7 +14,8 @@ import pl.lambada.songsync.util.networking.Ktor.json
 import java.net.URLEncoder
 
 class MusixmatchAPI {
-    private val baseURL = "http://158.180.60.95"
+    // Disabled in the provider registry until a verified HTTPS backend is available.
+    private val baseURL = "https://158.180.60.95"
 
     /**
      * Searches for synced lyrics using the song name and artist name.
@@ -40,10 +43,8 @@ class MusixmatchAPI {
         val response = client.get(
             "$baseURL/v2/full?artist=$artistName&track=$songName"
         )
+        response.requireProviderSuccess(Providers.MUSIXMATCH)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
-
-        if (response.status.value !in 200..299)
-            return null
 
         val result = json.decodeFromString<MusixmatchSearchResponse>(responseBody)
 
@@ -54,7 +55,7 @@ class MusixmatchAPI {
             albumCoverLink = result.artwork,
             musixmatchID = result.id,
             hasSyncedLyrics = result.hasSyncedLyrics,
-            hasUnsyncedLyrics = result.hasSyncedLyrics,
+            hasUnsyncedLyrics = result.hasUnsyncedLyrics,
             syncedLyrics = result.syncedLyrics?.lyrics,
             unsyncedLyrics = result.unsyncedLyrics?.lyrics,
             availableLanguages = result.availableLanguages,
@@ -78,10 +79,8 @@ class MusixmatchAPI {
         val response = client.get(
             "$baseURL/v2/full?id=$songId&lang=$language"
         )
+        response.requireProviderSuccess(Providers.MUSIXMATCH)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
-
-        if (response.status.value !in 200..299)
-            return null
 
         val result = json.decodeFromString<MusixmatchSearchResponse>(responseBody)
 

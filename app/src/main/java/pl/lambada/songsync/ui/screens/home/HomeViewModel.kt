@@ -28,6 +28,8 @@ import kotlinx.coroutines.launch
 import pl.lambada.songsync.R
 import pl.lambada.songsync.data.UserSettingsController
 import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsLookupOutcome
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsRequest
 import pl.lambada.songsync.domain.model.Song
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.SortOrders
@@ -64,6 +66,7 @@ class HomeViewModel(
 
     // filtered folders/lyrics songs
     private var _cachedFilteredSongs = MutableStateFlow<List<Song>>(emptyList())
+    private var _filtersActive = MutableStateFlow(false)
 
     // searching
     private var _searchResults = MutableStateFlow<List<Song>>(emptyList())
@@ -71,7 +74,7 @@ class HomeViewModel(
     var displaySongs by mutableStateOf(
         when {
             searchQuery.isNotEmpty() -> _searchResults.value
-            _cachedFilteredSongs.value.isNotEmpty() -> _cachedFilteredSongs.value
+            _filtersActive.value -> _cachedFilteredSongs.value
             else -> allSongs ?: listOf()
         }
     )
@@ -96,10 +99,10 @@ class HomeViewModel(
             .filterNotNull()
             // simple .combine wasn't enough apparently, so im using this
             .flatMapLatest { all ->
-                _cachedFilteredSongs.combine(_searchResults) { filtered, searchResults ->
+                combine(_cachedFilteredSongs, _searchResults, _filtersActive) { filtered, searchResults, filtersActive ->
                     when {
                         searchQuery.isNotEmpty() -> searchResults
-                        filtered.isNotEmpty() -> filtered
+                        filtersActive -> filtered
                         else -> all
                     }
                 }
@@ -185,7 +188,7 @@ class HomeViewModel(
             }
 
             val data: List<Song> = when {
-                _cachedFilteredSongs.value.isNotEmpty() -> _cachedFilteredSongs.value
+                _filtersActive.value -> _cachedFilteredSongs.value
                 cachedSongs != null -> cachedSongs!!
                 else -> { return@launch }
             }
@@ -226,10 +229,12 @@ class HomeViewModel(
      */
     fun filterSongs() = viewModelScope.launch {
         hideFolders = userSettingsController.blacklistedFolders.isNotEmpty()
+        _filtersActive.value = userSettingsController.hideLyrics || hideFolders
+        val songs = cachedSongs ?: return@launch
 
         when {
             userSettingsController.hideLyrics && hideFolders -> {
-                _cachedFilteredSongs.value = cachedSongs!!
+                _cachedFilteredSongs.value = songs
                     .filter {
                         it.filePath.toLrcFile()?.exists() != true && !userSettingsController.blacklistedFolders.contains(
                             it.filePath!!.substring(
@@ -240,12 +245,12 @@ class HomeViewModel(
             }
 
             userSettingsController.hideLyrics -> {
-                _cachedFilteredSongs.value = cachedSongs!!
+                _cachedFilteredSongs.value = songs
                     .filter { it.filePath.toLrcFile()?.exists() != true }
             }
 
             hideFolders -> {
-                _cachedFilteredSongs.value = cachedSongs!!.filter {
+                _cachedFilteredSongs.value = songs.filter {
                     !userSettingsController.blacklistedFolders.contains(
                         it.filePath!!.substring(
                             0,
@@ -288,24 +293,18 @@ class HomeViewModel(
         }
     }
 
-    suspend fun getSongInfo(query: SongInfo): SongInfo? =
-        lyricsProviderService.getSongInfo(query, provider = userSettingsController.selectedProvider)
-
-    suspend fun getSyncedLyrics(title: String, artist: String): String? {
-        return try {
-            lyricsProviderService.getSyncedLyrics(
-                title,
-                artist,
-                provider = userSettingsController.selectedProvider,
-                includeTranslationNetEase = userSettingsController.includeTranslation,
-                includeRomanizationNetEase = userSettingsController.includeRomanization,
+    suspend fun lookupLyrics(title: String?, artist: String?): LyricsLookupOutcome =
+        lyricsProviderService.lookupLyrics(
+            LyricsRequest(
+                title = title,
+                artist = artist,
+                includeTranslation = userSettingsController.includeTranslation,
+                includeRomanization = userSettingsController.includeRomanization,
                 multiPersonWordByWord = userSettingsController.multiPersonWordByWord,
-                unsyncedFallbackMusixmatch = userSettingsController.unsyncedFallbackMusixmatch
-            )
-        } catch (e: Exception) {
-            null
-        }
-    }
+                allowUnsynced = userSettingsController.unsyncedFallbackMusixmatch,
+            ),
+            userSettingsController.selectedProvider,
+        )
 
     fun selectSong(song: Song, newValue: Boolean) {
         if (newValue) {
@@ -354,7 +353,9 @@ class HomeViewModel(
         playingSongAlbumArt = try {
             metadata.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)!!.let {
                 // not same name of files because img won't update, cache dir cleared at app start
-                val file = File(context.cacheDir, "${UUID.randomUUID()}.jpg")
+                val cacheDirectory = File(context.cacheDir, "now_playing")
+                cacheDirectory.mkdirs()
+                val file = File(cacheDirectory, "${UUID.randomUUID()}.jpg")
                 it.compress(Bitmap.CompressFormat.JPEG, 100, file.outputStream())
                 Uri.parse(file.absolutePath)
             }

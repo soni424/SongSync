@@ -7,12 +7,15 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import pl.lambada.songsync.data.remote.PaxMusicHelper
+import pl.lambada.songsync.data.remote.lyrics_providers.requireProviderSuccess
+import pl.lambada.songsync.data.remote.lyrics_providers.isLikelyTrackMatch
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.others.PaxQQPayload
 import pl.lambada.songsync.domain.model.lyrics_providers.others.QQMusicSearchResponse
 import pl.lambada.songsync.util.EmptyQueryException
 import pl.lambada.songsync.util.networking.Ktor.client
 import pl.lambada.songsync.util.networking.Ktor.json
+import pl.lambada.songsync.util.Providers
 
 class QQMusicAPI {
     private val baseURL = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
@@ -51,18 +54,19 @@ class QQMusicAPI {
             parameter("new_json", 1)
             parameter("w", search)
         }
+        response.requireProviderSuccess(Providers.QQMUSIC)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
-
-        if (response.status.value !in 200..299)
-            return null
 
         val result = json.decodeFromString<QQMusicSearchResponse>(responseBody)
 
-        val song = try {
-            result.data.song.list[offset]
-        } catch (e: IndexOutOfBoundsException) {
-            return null
-        }
+        val song = result.data.song.list.drop(offset).firstOrNull { candidate ->
+            isLikelyTrackMatch(
+                query.songName,
+                query.artistName,
+                candidate.title,
+                candidate.singer.joinToString(", ") { it.name },
+            )
+        } ?: return null
 
         val artists = song.singer.joinToString(", ") { it.name }
 
@@ -90,6 +94,7 @@ class QQMusicAPI {
         val response = client.post(lyricsURL) {
             setBody(payload)
         }
+        response.requireProviderSuccess(Providers.QQMUSIC)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
 
         return PaxMusicHelper().formatWordByWordLyrics(responseBody, multiPersonWordByWord)

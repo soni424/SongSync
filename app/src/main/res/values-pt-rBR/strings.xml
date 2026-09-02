@@ -72,7 +72,7 @@
     <string name="invert_selection">Inverter seleção</string>
     <string name="no_lyrics">Sem letras: %1$d</string>
     <plurals name="this_will_download_lyrics_for_all_songs">
-        <item quantity="one">Isso baixará a letra de uma música. Letras existentes para músicas serão sobrescritas por novas. Isso pode ser menos preciso do que baixar letras uma por uma. Você tem certeza de que deseja continuar?</item>
+        <item quantity="one">Isso baixará a letra de %1$d música. Letras existentes para músicas serão sobrescritas por novas. Isso pode ser menos preciso do que baixar letras uma por uma. Você tem certeza de que deseja continuar?</item>
         <item quantity="other">Isso baixará letras para %1$d músicas. Letras existentes para músicas serão sobrescritas por novas. Isso pode ser menos preciso do que baixar letras uma por uma. Você tem certeza de que deseja continuar?</item>
     </plurals>
     <string name="invalid_query">Consulta inválida</string>
@@ -168,7 +168,7 @@
     <string name="include_romanization">Incluir romanização</string>
     <string name="include_romanization_summary">Incluir letras romanizadas ao obter letras de músicas do provedor Netease</string>
     <plurals name="songs_count">
-        <item quantity="one">canção</item>
+        <item quantity="one">%1$d canção</item>
         <item quantity="many">canções</item>
         <item quantity="other">canções</item>
     </plurals>

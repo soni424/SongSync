@@ -15,34 +15,31 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.ViewCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import pl.lambada.songsync.data.UserSettingsController
 import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
 import pl.lambada.songsync.ui.Navigator
-import pl.lambada.songsync.ui.components.dialogs.NoInternetDialog
 import pl.lambada.songsync.ui.theme.SongSyncTheme
 import pl.lambada.songsync.util.dataStore
+import pl.lambada.songsync.util.networking.hasValidatedInternet
 import java.io.File
+import kotlinx.coroutines.launch
 
 /**
  * The main activity of the SongSync app.
  */
 class MainActivity : ComponentActivity() {
-    private val lyricsProviderService = LyricsProviderService()
+    private lateinit var lyricsProviderService: LyricsProviderService
 
     @SuppressLint("SuspiciousIndentation")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lyricsProviderService = LyricsProviderService { hasValidatedInternet() }
         // fixes weird system bars background upon app loading
         enableEdgeToEdge()
 
@@ -52,40 +49,29 @@ class MainActivity : ComponentActivity() {
         }
 
         val dataStore = this.dataStore
-        val userSettingsController = UserSettingsController(dataStore)
         checkOrCreateDownloadSubFolder()
+        cleanupSongSyncCache(this)
         createNotificationChannel()
 
-        setContent {
-            val navController = rememberNavController()
-            var networkError by rememberSaveable { mutableStateOf<Boolean?>(null) }
-            val context = LocalContext.current
+        lifecycleScope.launch {
+            val userSettingsController = UserSettingsController.create(dataStore)
+            setContent {
+                val navController = rememberNavController()
 
-            LaunchedEffect(Unit) {
-                context.cacheDir.deleteRecursively()
-                if (networkError == null) lyricsProviderService
-                    .refreshSpotifyToken()
-                    .onFailure { networkError = true }
-            }
+                SongSyncTheme(pureBlack = userSettingsController.pureBlack) {
+                    // check in case user revoked permissions later
+                    if (userSettingsController.passedInit)
+                        CheckForPermissions(
+                            userSettingsController = userSettingsController
+                        )
 
-            SongSyncTheme(pureBlack = userSettingsController.pureBlack) {
-                if (networkError == true) NoInternetDialog(
-                    onConfirm = ::finishAndRemoveTask,
-                    onIgnore = { networkError = false }
-                )
-
-                // check in case user revoked permissions later
-                if (userSettingsController.passedInit)
-                    CheckForPermissions(
-                        userSettingsController = userSettingsController
-                    )
-
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    Navigator(
-                        navController = navController,
-                        userSettingsController = userSettingsController,
-                        lyricsProviderService = lyricsProviderService
-                    )
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        Navigator(
+                            navController = navController,
+                            userSettingsController = userSettingsController,
+                            lyricsProviderService = lyricsProviderService
+                        )
+                    }
                 }
             }
         }
@@ -129,6 +115,14 @@ private fun checkOrCreateDownloadSubFolder() {
     val songSyncDir = File(downloadsDir, "SongSync")
 
     if (!songSyncDir.exists()) songSyncDir.mkdir()
+}
+
+private fun cleanupSongSyncCache(context: Context) {
+    val nowPlayingCache = File(context.cacheDir, "now_playing")
+    val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+    nowPlayingCache.listFiles()
+        ?.filter { it.isFile && it.lastModified() < cutoff }
+        ?.forEach { it.delete() }
 }
 
 private fun Activity.createNotificationChannel() {

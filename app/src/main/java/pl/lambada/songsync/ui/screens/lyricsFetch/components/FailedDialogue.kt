@@ -1,6 +1,5 @@
 package pl.lambada.songsync.ui.screens.lyricsFetch.components
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
@@ -9,7 +8,9 @@ import androidx.compose.ui.res.stringResource
 import pl.lambada.songsync.R
 import pl.lambada.songsync.util.EmptyQueryException
 import pl.lambada.songsync.util.NoTrackFoundException
-import java.io.FileNotFoundException
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsLookupException
+import pl.lambada.songsync.ui.userMessage
+import androidx.compose.ui.platform.LocalContext
 
 /**
  * Composable function to display a dialog for failed operations.
@@ -24,6 +25,7 @@ fun FailedDialogue(
     onOkRequest: () -> Unit,
     exception: Exception
 ) {
+    val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismissRequest,
         confirmButton = { Button(onClick = onOkRequest) { Text(stringResource(R.string.ok)) } },
@@ -32,7 +34,8 @@ fun FailedDialogue(
             when (exception) {
                 is NoTrackFoundException -> Text(stringResource(R.string.no_results))
                 is EmptyQueryException -> Text(stringResource(R.string.invalid_query))
-                else -> Text(exception.toString())
+                is LyricsLookupException -> Text(exception.failure.userMessage(context))
+                else -> Text(stringResource(R.string.unknown_error_occurred))
             }
         }
     )

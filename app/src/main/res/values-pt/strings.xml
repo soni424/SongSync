@@ -89,7 +89,7 @@
     <string name="requires_higher_storage_permissions">Este aplicativo requer acesso ao armazenamento para escanear sua Biblioteca de Músicas e salvar as letras.</string>
     <string name="if_connected_spotify_down">Se você estiver conectado, o Spotify pode estar indisponível. Por favor, tente novamente tarde.</string>
     <plurals name="this_will_download_lyrics_for_all_songs">
-        <item quantity="one">Isto descarregará a letra de uma música. As letras das músicas existentes serão substituídas por novas. Isso pode ser menos preciso do que descarregar as letras uma a uma. Tem certeza que quer continuar?</item>
+        <item quantity="one">Isto descarregará a letra de %1$d música. As letras das músicas existentes serão substituídas por novas. Isso pode ser menos preciso do que descarregar as letras uma a uma. Tem certeza que quer continuar?</item>
         <item quantity="many">Isto descarregará das letras das músicas %1$d. As letras das músicas existentes serão substituídas por novas. Isso pode ser menos preciso do que descarregar as letras uma a uma. Tem certeza que quer continuar?</item>
         <item quantity="other">Isto descarregará das letras das músicas %1$d. As letras das músicas existentes serão substituídas por novas. Isso pode ser menos preciso do que descarregar as letras uma a uma. Tem certeza que quer continuar?</item>
     </plurals>

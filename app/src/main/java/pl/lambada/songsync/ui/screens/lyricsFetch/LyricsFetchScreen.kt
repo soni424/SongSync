@@ -21,6 +21,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MediumTopAppBar
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
@@ -45,7 +46,6 @@ import pl.lambada.songsync.ui.components.ProvidersDropdownMenu
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.CloudProviderTitle
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.FailedDialogue
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.LocalSongContent
-import pl.lambada.songsync.ui.screens.lyricsFetch.components.NoConnectionDialogue
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.NotSubmittedContent
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.SuccessContent
 import pl.lambada.songsync.util.Providers
@@ -221,7 +221,8 @@ fun SharedTransitionScope.LyricsFetchScreen(
                         disableMarquee = viewModel.userSettingsController.disableMarquee,
                         allowTryingAgain =
                             viewModel.userSettingsController.selectedProvider != Providers.MUSIXMATCH,
-                        selectedProvider = viewModel.userSettingsController.selectedProvider,
+                        selectedProvider = viewModel.resolvedProvider,
+                        lyricsTiming = viewModel.resolvedTiming,
                         onExpandProvidersRequest = { expandedProviders = true },
                     )
 
@@ -231,10 +232,16 @@ fun SharedTransitionScope.LyricsFetchScreen(
                         exception = queryState.exception
                     )
 
-                    QueryStatus.NoConnection -> NoConnectionDialogue(
-                        onDismissRequest = { viewModel.queryState = QueryStatus.NotSubmitted },
-                        onOkRequest = { viewModel.queryState = QueryStatus.NotSubmitted }
-                    )
+                    QueryStatus.NoConnection -> Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(stringResource(R.string.offline_local_library_available))
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(onClick = { viewModel.loadSongInfo(context) }) {
+                            Text(stringResource(R.string.try_again))
+                        }
+                    }
                 }
             }
         }

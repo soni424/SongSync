@@ -168,7 +168,7 @@ fun QuickLyricsSearchPage(
                                                         modifier = Modifier
                                                             .fillMaxWidth()
                                                             .heightIn(max = 300.dp),
-                                                        stacktrace = lyricsState.message ?: ""
+                                                        message = lyricsState.message ?: ""
                                                     )
                                                 }
                                             }
@@ -182,8 +182,8 @@ fun QuickLyricsSearchPage(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .heightIn(max = 300.dp),
-                                    stacktrace = animatedPageState.exception.message
-                                        ?: animatedPageState.exception.stackTrace.toString()
+                                    message = animatedPageState.exception.message
+                                        ?: stringResource(R.string.unknown_error_occurred)
                                 )
                             }
                         }

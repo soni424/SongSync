@@ -8,24 +8,28 @@ import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
-import io.ktor.client.statement.request
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
+import io.ktor.http.HttpStatusCode
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import pl.lambada.songsync.data.remote.lyrics_providers.requireProviderSuccess
+import pl.lambada.songsync.data.remote.lyrics_providers.isLikelyTrackMatch
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.ServerTimeResponse
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.TrackSearchResult
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.WebPlayerTokenResponse
 import pl.lambada.songsync.util.EmptyQueryException
 import pl.lambada.songsync.util.NoTrackFoundException
+import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.util.networking.Ktor.client
 import pl.lambada.songsync.util.networking.Ktor.json
 import java.io.FileNotFoundException
-import java.net.URLEncoder
 import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
+import java.text.SimpleDateFormat
 import java.util.concurrent.TimeUnit
+import java.util.Locale
 
 @Serializable
 data class SecretData(
@@ -51,7 +55,7 @@ class SpotifyAPI {
 
     // Token data
     private var spotifyToken = ""
-    private var tokenTime: Long = 0
+    private var tokenExpiresAt: Long = 0
 
     /**
      * Fetches secret data from GitHub and initializes TOTP
@@ -61,6 +65,7 @@ class SpotifyAPI {
 
         try {
             val response = client.get("https://raw.githubusercontent.com/xyloflake/spot-secrets-go/refs/heads/main/secrets/secretBytes.json")
+            response.requireProviderSuccess(Providers.SPOTIFY)
             val responseBody = response.bodyAsText(Charsets.UTF_8)
             val secretDataList = json.decodeFromString<List<SecretData>>(responseBody)
             
@@ -111,8 +116,14 @@ class SpotifyAPI {
         ) {
             reqHeaders.forEach { (key, value) -> header(key, value) }
         }
+        response.requireProviderSuccess(Providers.SPOTIFY)
         val body = response.bodyAsText(Charsets.UTF_8)
-        return json.decodeFromString<ServerTimeResponse>(body).serverTime * 1000
+        val httpDateMillis = response.headers["Date"]?.let { date ->
+            runCatching {
+                SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z", Locale.US).parse(date)?.time
+            }.getOrNull()
+        }
+        return resolveSpotifyServerTimeMillis(body, httpDateMillis, System.currentTimeMillis())
     }
 
     /**
@@ -133,7 +144,7 @@ class SpotifyAPI {
      * @param force If true, forces a token refresh even if the current token is still valid.
      */
     suspend fun refreshToken(force: Boolean = false) {
-        if (force || spotifyToken == "") {
+        if (force || spotifyToken.isBlank() || System.currentTimeMillis() >= tokenExpiresAt - 60_000) {
             val totp = getTsAndTOTP()
             val response = client.get(
                 webPlayerURL + "api/token"
@@ -145,11 +156,12 @@ class SpotifyAPI {
                 parameter("totp", totp.second)
                 parameter("totpVer", totpVer)
             }
+            response.requireProviderSuccess(Providers.SPOTIFY)
             val responseBody = response.bodyAsText(Charsets.UTF_8)
             val json = json.decodeFromString<WebPlayerTokenResponse>(responseBody)
 
             this.spotifyToken = json.accessToken
-            this.tokenTime = System.currentTimeMillis()
+            this.tokenExpiresAt = json.accessTokenExpirationTimestampMs
         }
     }
 
@@ -161,41 +173,46 @@ class SpotifyAPI {
      */
     @Throws(UnknownHostException::class, FileNotFoundException::class, NoTrackFoundException::class)
     suspend fun getSongInfo(query: SongInfo, offset: Int? = 0): SongInfo {
-        if (System.currentTimeMillis() - tokenTime > 1800000) // 30 minutes
+        if (spotifyToken.isBlank() || System.currentTimeMillis() >= tokenExpiresAt - 60_000)
             refreshToken()
 
-        val searchTerm = withContext(Dispatchers.IO) {
-            URLEncoder.encode(
-                "${query.songName} ${query.artistName}",
-                StandardCharsets.UTF_8.toString()
-            )
-        }
+        val searchTerm = "${query.songName.orEmpty()} ${query.artistName.orEmpty()}".trim()
 
-        if (searchTerm == "+")
+        if (searchTerm.isBlank())
             throw EmptyQueryException()
 
-        val variables = """{"searchTerm":"$searchTerm","offset":$offset,"limit":1,"numberOfTopResults":20,"includeAudiobooks":false}"""
+        val variables = json.encodeToString(buildJsonObject {
+            put("searchTerm", searchTerm)
+            put("offset", offset ?: 0)
+            put("limit", 10)
+            put("numberOfTopResults", 20)
+            put("includeAudiobooks", false)
+        })
         val extensions = """{"persistedQuery":{"version":1,"sha256Hash":"1d021289df50166c61630e02f002ec91182b518e56bcd681ac6b0640390c0245"}}"""
 
-        val encodedVariables = withContext(Dispatchers.IO) {
-            URLEncoder.encode(variables, StandardCharsets.UTF_8.toString())
-        }
-        val encodedExtensions = withContext(Dispatchers.IO) {
-            URLEncoder.encode(extensions, StandardCharsets.UTF_8.toString())
+        suspend fun search() = client.get(baseURL) {
+            header("Authorization", "Bearer $spotifyToken")
+            parameter("operationName", "searchTracks")
+            parameter("variables", variables)
+            parameter("extensions", extensions)
         }
 
-        val response = client.get(
-           "$baseURL?operationName=searchTracks&variables=$encodedVariables&extensions=$encodedExtensions"
-        ) {
-           headers.append("Authorization", "Bearer $spotifyToken")
+        var response = search()
+        if (response.status == HttpStatusCode.Unauthorized) {
+            refreshToken(force = true)
+            response = search()
         }
+        response.requireProviderSuccess(Providers.SPOTIFY)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
 
         val json = json.decodeFromString<TrackSearchResult>(responseBody)
         if (json.data.searchV2.tracksV2.items.isEmpty())
            throw NoTrackFoundException()
 
-        val trackItem = json.data.searchV2.tracksV2.items[0]
+        val trackItem = json.data.searchV2.tracksV2.items.firstOrNull { item ->
+            val artists = item.item.data.artists.items.joinToString(", ") { it.profile.name }
+            isLikelyTrackMatch(query.songName, query.artistName, item.item.data.name, artists)
+        } ?: throw NoTrackFoundException()
         val track = trackItem.item.data
 
         val artists = track.artists.items.joinToString(", ") { it.profile.name }
@@ -211,4 +228,19 @@ class SpotifyAPI {
            albumArtURL
         )
     }
+}
+
+internal fun resolveSpotifyServerTimeMillis(
+    body: String,
+    httpDateMillis: Long?,
+    deviceTimeMillis: Long,
+): Long {
+    val spotifyTime = runCatching {
+        json.decodeFromString<ServerTimeResponse>(body).serverTime
+    }.getOrNull()
+    return spotifyTime
+        ?.takeIf { it > 0 }
+        ?.times(1000)
+        ?: httpDateMillis
+        ?: deviceTimeMillis
 }

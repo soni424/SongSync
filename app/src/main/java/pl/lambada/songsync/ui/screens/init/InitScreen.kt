@@ -101,7 +101,7 @@ fun InitScreen(
                         onClick = {
                             viewModel.onProceed()
                             navController.navigate(ScreenHome) {
-                                popUpTo(ScreenHome) { inclusive = true }
+                                popUpTo<pl.lambada.songsync.ui.InitScreen> { inclusive = true }
                             }
                         },
                         enabled = viewModel.allFilesPermissionGranted

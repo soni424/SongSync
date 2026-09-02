@@ -7,21 +7,27 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import pl.lambada.songsync.R
 import pl.lambada.songsync.data.UserSettingsController
 import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsLookupException
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsLookupOutcome
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsRequest
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsFailure
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsTiming
+import pl.lambada.songsync.data.remote.lyrics_providers.ProviderRequestException
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.ui.LocalSong
 import pl.lambada.songsync.util.embedLyricsInFile
-import pl.lambada.songsync.util.ext.getVersion
 import pl.lambada.songsync.util.generateLrcContent
 import pl.lambada.songsync.util.isLegacyFileAccessRequired
 import pl.lambada.songsync.util.newLyricsFilePath
 import pl.lambada.songsync.util.saveToExternalPath
 import pl.lambada.songsync.util.showToast
-import java.net.UnknownHostException
 
 /**
  * ViewModel class for the main functionality of the app.
@@ -42,40 +48,50 @@ class LyricsFetchViewModel(
     var lrcOffset by mutableIntStateOf(0)
 
     var lyricsFetchState by mutableStateOf<LyricsFetchState>(LyricsFetchState.NotSubmitted)
-
-    private suspend fun getSyncedLyrics(title: String, artist: String): String? =
-        lyricsProviderService.getSyncedLyrics(
-            title,
-            artist,
-            userSettingsController.selectedProvider,
-            userSettingsController.includeTranslation,
-            userSettingsController.includeRomanization,
-            userSettingsController.multiPersonWordByWord,
-            userSettingsController.unsyncedFallbackMusixmatch
-        )
+    var resolvedProvider by mutableStateOf(userSettingsController.selectedProvider)
+        private set
+    var resolvedTiming by mutableStateOf<LyricsTiming?>(null)
+        private set
+    private var lookupJob: Job? = null
 
     fun loadSongInfo(context: Context, tryingAgain: Boolean = false) {
-        viewModelScope.launch(Dispatchers.IO) {
+        lookupJob?.cancel()
+        lookupJob = viewModelScope.launch(Dispatchers.IO) {
             try {
                 queryState = QueryStatus.Pending
                 lyricsFetchState = LyricsFetchState.NotSubmitted
                 queryOffset = if (tryingAgain) queryOffset + 1 else 0
 
-                val result = lyricsProviderService
-                    .getSongInfo(
-                        query = SongInfo(querySongName, queryArtistName),
+                when (val outcome = lyricsProviderService.lookupLyrics(
+                    LyricsRequest(
+                        title = querySongName,
+                        artist = queryArtistName,
                         offset = queryOffset,
-                        provider = userSettingsController.selectedProvider
-                    )
-                    ?: error("Error fetching lyrics for the song.")
-
-                queryState = QueryStatus.Success(result)
-                loadLyrics(result.songName!!, result.artistName!!)
-            } catch (e: Exception) {
-                queryState = when (e) {
-                    is UnknownHostException -> QueryStatus.NoConnection
-                    else -> QueryStatus.Failed(e)
+                        includeTranslation = userSettingsController.includeTranslation,
+                        includeRomanization = userSettingsController.includeRomanization,
+                        multiPersonWordByWord = userSettingsController.multiPersonWordByWord,
+                        allowUnsynced = userSettingsController.unsyncedFallbackMusixmatch,
+                    ),
+                    userSettingsController.selectedProvider,
+                )) {
+                    is LyricsLookupOutcome.Success -> {
+                        resolvedProvider = outcome.document.provider
+                        resolvedTiming = outcome.document.timing
+                        queryState = QueryStatus.Success(outcome.document.song)
+                        lyricsFetchState = LyricsFetchState.Success(outcome.document.content)
+                    }
+                    is LyricsLookupOutcome.Failed -> {
+                        queryState = if (outcome.failure is LyricsFailure.Offline) {
+                            QueryStatus.NoConnection
+                        } else {
+                            QueryStatus.Failed(LyricsLookupException(outcome.failure, outcome.attempts))
+                        }
+                    }
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (e: Exception) {
+                queryState = QueryStatus.Failed(e)
             }
         }
     }
@@ -86,39 +102,37 @@ class LyricsFetchViewModel(
         filePath: String?,
         context: Context,
         generatedUsingString: String
-    ) {
-        val lrcContent = generateLrcContent(song, lyrics, generatedUsingString, lrcOffset, userSettingsController.directlyModifyTimestamps)
-        val file = newLyricsFilePath(filePath, song)
-
-        if (!isLegacyFileAccessRequired(filePath)) {
-            file.writeText(lrcContent)
-        } else {
-            saveToExternalPath(
-                context = context,
-                sourceFilePath = filePath,
-                lrc = lrcContent,
-                fileName = file.name,
-                newLyricsFilePath = userSettingsController.sdCardPath
+    ): Boolean {
+        return runCatching {
+            val lrcContent = generateLrcContent(
+                song,
+                lyrics,
+                generatedUsingString,
+                lrcOffset,
+                userSettingsController.directlyModifyTimestamps,
             )
-        }
+            val file = newLyricsFilePath(filePath, song)
 
-        showToast(context, R.string.file_saved_to, file.absolutePath)
-    }
-
-    private fun loadLyrics(title: String, artist: String) {
-        viewModelScope.launch {
-            lyricsFetchState = LyricsFetchState.Pending
-
-            try {
-                val lyrics = getSyncedLyrics(
-                    title,
-                    artist
-                ) ?: throw NullPointerException("Lyrics result is null")
-
-                lyricsFetchState = LyricsFetchState.Success(lyrics)
-            } catch (e: Exception) {
-                lyricsFetchState = LyricsFetchState.Failed(e)
+            val saved = if (!isLegacyFileAccessRequired(filePath)) {
+                file.parentFile?.mkdirs()
+                file.writeText(lrcContent)
+                true
+            } else {
+                saveToExternalPath(
+                    context = context,
+                    sourceFilePath = filePath,
+                    lrc = lrcContent,
+                    fileName = file.name,
+                    newLyricsFilePath = userSettingsController.sdCardPath,
+                )
             }
+
+            if (!saved) throw IllegalStateException("Lyrics file could not be saved")
+            showToast(context, R.string.file_saved_to, file.absolutePath)
+            true
+        }.getOrElse {
+            showToast(context, R.string.storage_operation_failed)
+            false
         }
     }
 
@@ -131,11 +145,12 @@ class LyricsFetchViewModel(
         val lrcContent = generateLrcContent(song, lyrics, context.getString(R.string.generated_using), lrcOffset, userSettingsController.directlyModifyTimestamps)
 
         runCatching {
-            embedLyricsInFile(
+            val embedded = embedLyricsInFile(
                 context = context,
                 filePath = if (filePath != null && filePath.isNotEmpty()) filePath else throw NullPointerException("File path is null"),
                 lrcContent
             )
+            if (!embedded) throw IllegalStateException("Embedding failed")
         }.onFailure { exception ->
             showToast(context, resolveEmbedErrorMessage(context, exception))
         }.onSuccess {
@@ -162,10 +177,20 @@ class LyricsFetchViewModel(
                         )
                     }
                 } else {
-                    lyricsFetchState = LyricsFetchState.Failed(Exception("No lyrics found for this language"))
+                    lyricsFetchState = LyricsFetchState.Failed(
+                        LyricsLookupException(LyricsFailure.NoLyrics(1))
+                    )
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
-                lyricsFetchState = LyricsFetchState.Failed(e)
+                lyricsFetchState = LyricsFetchState.Failed(
+                    if (e is ProviderRequestException) {
+                        LyricsLookupException(e.failure)
+                    } else {
+                        e
+                    }
+                )
             }
         }
     }
@@ -174,7 +199,7 @@ class LyricsFetchViewModel(
 private fun resolveEmbedErrorMessage(context: Context, exception: Throwable): String {
     return when (exception) {
         is NullPointerException -> context.getString(R.string.embed_non_local_song_error)
-        else -> exception.message ?: context.getString(R.string.error)
+        else -> context.getString(R.string.storage_operation_failed)
     }
 }
 

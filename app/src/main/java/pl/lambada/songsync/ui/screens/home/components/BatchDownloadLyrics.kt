@@ -15,8 +15,8 @@ import pl.lambada.songsync.ui.screens.home.components.batchDownload.BatchDownloa
 import pl.lambada.songsync.ui.screens.home.components.batchDownload.DownloadCompleteDialog
 import pl.lambada.songsync.ui.screens.home.components.batchDownload.DownloadProgressDialog
 import pl.lambada.songsync.ui.screens.home.components.batchDownload.LegacyPromptDialog
-import pl.lambada.songsync.ui.screens.home.components.batchDownload.RateLimitedDialog
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
 
 @SuppressLint("StringFormatMatches")
 @Composable
@@ -26,12 +26,14 @@ fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit) {
     var successCount by rememberSaveable { mutableIntStateOf(0) }
     var noLyricsCount by rememberSaveable { mutableIntStateOf(0) }
     var failedCount by rememberSaveable { mutableIntStateOf(0) }
+    var rateLimitSeen by rememberSaveable { mutableStateOf(false) }
+    var downloadJob by remember { mutableStateOf<Job?>(null) }
     val count = successCount + failedCount + noLyricsCount
     val total = songs.size
     val context = LocalContext.current
     val startBatchDownload = remember {
         {
-            viewModel.batchDownloadLyrics(
+            downloadJob = viewModel.batchDownloadLyrics(
                 context,
                 onProgressUpdate = { newSuccessCount, newNoLyricsCount, newFailedCount ->
                     successCount = newSuccessCount
@@ -39,7 +41,7 @@ fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit) {
                     failedCount = newFailedCount
                 },
                 onDownloadComplete = { uiState = UiState.Done },
-                onRateLimitReached = { uiState = UiState.RateLimited }
+                onRateLimitReached = { rateLimitSeen = true }
             )
         }
     }
@@ -74,14 +76,17 @@ fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit) {
                 if (total != 0) (count.toFloat() / total.toFloat() * 100).roundToInt() else 0
 
             DownloadProgressDialog(
-                currentSongTitle = songs.getOrNull(count % total)?.title,
+                currentSongTitle = songs.getOrNull(if (total > 0) count % total else 0)?.title,
                 count = count,
                 total = total,
                 percentage = percentage,
                 successCount = successCount,
                 noLyricsCount = noLyricsCount,
                 failedCount = failedCount,
-                onCancel = { uiState = UiState.Cancelled },
+                onCancel = {
+                    downloadJob?.cancel()
+                    uiState = UiState.Cancelled
+                },
                 disableMarquee = viewModel.userSettingsController.disableMarquee
             )
         }
@@ -90,13 +95,13 @@ fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit) {
             successCount = successCount,
             noLyricsCount = noLyricsCount,
             failedCount = failedCount,
+            rateLimitSeen = rateLimitSeen,
             onDismiss = { uiState = UiState.Cancelled }
         )
 
-        UiState.RateLimited -> RateLimitedDialog(onDismiss = { uiState = UiState.Cancelled })
     }
 }
 
 enum class UiState {
-    Warning, LegacyPrompt, Pending, Done, RateLimited, Cancelled
+    Warning, LegacyPrompt, Pending, Done, Cancelled
 }

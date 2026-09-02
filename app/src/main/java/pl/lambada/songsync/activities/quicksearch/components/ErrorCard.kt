@@ -29,7 +29,7 @@ import pl.lambada.songsync.R
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ErrorCard(
-    stacktrace: String,
+    message: String,
     modifier: Modifier = Modifier
 ) {
     OutlinedCard(
@@ -64,7 +64,7 @@ fun ErrorCard(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = stacktrace,
+                    text = message,
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
                     fontWeight = FontWeight.Normal
@@ -79,19 +79,6 @@ fun ErrorCard(
 private fun ErrorCardPreview() {
     ErrorCard(
         modifier = Modifier.heightIn(max = 300.dp),
-        stacktrace = "java.lang.IllegalArgumentException: Unsupported AnimationVector type\n" +
-                "                                                                                                    \tat pl.lambada.songsync.util.ui.DurationBasedCustomAnimationsKt.minus(DurationBasedCustomAnimations.kt:112)\n" +
-                "                                                                                                    \tat pl.lambada.songsync.util.ui.DurationBasedCustomAnimationsKt.access\$minus(DurationBasedCustomAnimations.kt:1)\n" +
-                "                                                                                                    \tat pl.lambada.songsync.util.ui.VectorizedPixelAnimationSpec.getValueFromNanos(DurationBasedCustomAnimations.kt:57)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.TargetBasedAnimation.getValueFromNanos(Animation.kt:265)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.Transition\$TransitionAnimationState.seekTo\$animation_core_release(Transition.kt:1416)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.Transition.seekAnimations\$animation_core_release(Transition.kt:1256)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.Transition.seekAnimations\$animation_core_release(Transition.kt:1260)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.Transition.seekAnimations\$animation_core_release(Transition.kt:1260)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.SeekableTransitionState.seekToFraction(Transition.kt:744)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.SeekableTransitionState.access\$seekToFraction(Transition.kt:224)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.SeekableTransitionState\$animateOneFrameLambda\$1.invoke(Transition.kt:333)\n" +
-                "                                                                                                    \tat androidx.compose.animation.core.SeekableTransitionState\$animateOneFrameLambda\$1.invoke(Transition.kt:311)\n" +
-                "                                                                                                    \tat androidx.compose.runtime.BroadcastFrameClock\$FrameAwaiter.resume(BroadcastFrameClock.kt:42)"
+        message = "Couldn’t reach the lyrics provider. Please try again."
     )
 }

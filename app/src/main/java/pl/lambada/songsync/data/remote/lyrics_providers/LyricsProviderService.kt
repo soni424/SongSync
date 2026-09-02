@@ -1,6 +1,10 @@
 package pl.lambada.songsync.data.remote.lyrics_providers
 
-import android.util.Log
+import io.ktor.client.plugins.HttpRequestTimeoutException
+import io.ktor.client.network.sockets.ConnectTimeoutException
+import io.ktor.client.network.sockets.SocketTimeoutException
+import kotlinx.coroutines.CancellationException
+import kotlinx.serialization.SerializationException
 import pl.lambada.songsync.data.remote.lyrics_providers.apple.AppleAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.others.LRCLibAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.others.MusixmatchAPI
@@ -13,129 +17,147 @@ import pl.lambada.songsync.util.EmptyQueryException
 import pl.lambada.songsync.util.InternalErrorException
 import pl.lambada.songsync.util.NoTrackFoundException
 import pl.lambada.songsync.util.Providers
-import java.io.FileNotFoundException
 import java.net.UnknownHostException
 
-/**
- * Service class for interacting with different lyrics providers.
- */
-class LyricsProviderService {
-    // Spotify API token
-    private val spotifyAPI = SpotifyAPI()
-
-    // Spotify Track Url
-    private var spotifyUrl = ""
-
-    // LRCLib Track ID
-    private var lrcLibID = 0
-
-    // QQMusic request payload
-    private var qqPayload = ""
-
-    // Netease Track ID and stuff
-    private var neteaseID = 0L
-    
-    // Apple API
-    private val appleAPI = AppleAPI()
-    
-    // Apple Track ID
-    private var appleID = 0L
-
-    // Musixmatch Song Info
-    private var musixmatchSongInfo: SongInfo? = null
-    // TODO: Use values from SongInfo object returned by search instead of storing them here
-
-    /**
-     * Refreshes the access token by sending a request to the Spotify API.
-     */
-    suspend fun refreshSpotifyToken() = kotlin.runCatching {
-        spotifyAPI.refreshToken()
-    }
-
-    /**
-     * Gets song information from the Spotify API.
-     * @param query The SongInfo object with songName and artistName fields filled.
-     * @param offset (optional) The offset used for trying to find a better match or searching again.
-     * @return The SongInfo object containing the song information.
-     */
-    @Throws(
-        UnknownHostException::class,
-        FileNotFoundException::class,
-        NoTrackFoundException::class,
-        EmptyQueryException::class,
-        InternalErrorException::class
+class LyricsProviderService(
+    providers: List<LyricsProvider>? = null,
+    hasValidatedNetwork: () -> Boolean = { true },
+) {
+    private val musixmatchAPI = MusixmatchAPI()
+    private val coordinator = LyricsCoordinator(
+        providers ?: createDefaultProviders(),
+        hasValidatedNetwork,
     )
-    suspend fun getSongInfo(query: SongInfo, offset: Int = 0, provider: Providers): SongInfo? {
-        return try {
-            when (provider) {
-                Providers.SPOTIFY -> spotifyAPI.getSongInfo(query, offset).also {
-                    spotifyUrl = it?.songLink ?: ""
-                } ?: throw NoTrackFoundException()
-                
-                Providers.LRCLIB -> LRCLibAPI().getSongInfo(query, offset).also {
-                    lrcLibID = it?.lrcLibID ?: 0
-                } ?: throw NoTrackFoundException()
 
-                Providers.NETEASE -> NeteaseAPI().getSongInfo(query, offset).also {
-                    neteaseID = it?.neteaseID ?: 0
-                } ?: throw NoTrackFoundException()
-
-                Providers.QQMUSIC -> QQMusicAPI().getSongInfo(query, offset).also {
-                    qqPayload = it?.qqPayload ?: ""
-                } ?: throw NoTrackFoundException()
-
-                Providers.APPLE -> appleAPI.getSongInfo(query, offset).also {
-                    appleID = it?.appleID ?: 0
-                } ?: throw NoTrackFoundException()
-
-                Providers.MUSIXMATCH -> MusixmatchAPI().getSongInfo(query, offset).also {
-                    musixmatchSongInfo = it
-                } ?: throw NoTrackFoundException()
-            }
-        } catch (e: Exception) {
-            when (e) {
-                is InternalErrorException, is NoTrackFoundException, is EmptyQueryException -> throw e
-                else -> throw InternalErrorException(Log.getStackTraceString(e))
-            }
-        }
-    }
-
-    /**
-     * Gets synced lyrics using the song link and returns them as a string formatted as an LRC file.
-     * @param songLink The link to the song.
-     * @return The synced lyrics as a string.
-     */
-    suspend fun getSyncedLyrics(
-        songTitle: String,
-        artistName: String,
-        provider: Providers,
-        // TODO providers could be a sealed interface to include such parameters
-        includeTranslationNetEase: Boolean = false,
-        includeRomanizationNetEase: Boolean = false,
-        multiPersonWordByWord: Boolean = false,
-        unsyncedFallbackMusixmatch: Boolean = true
-    ): String? {
-        return when (provider) {
-            Providers.SPOTIFY -> SpotifyLyricsAPI().getSyncedLyrics(spotifyUrl)
-            Providers.LRCLIB -> LRCLibAPI().getSyncedLyrics(lrcLibID)
-            Providers.NETEASE -> NeteaseAPI().getSyncedLyrics(
-                neteaseID, includeTranslationNetEase, includeRomanizationNetEase
-            )
-
-            Providers.QQMUSIC -> QQMusicAPI().getSyncedLyrics(qqPayload, multiPersonWordByWord)
-
-            Providers.APPLE -> appleAPI.getSyncedLyrics(
-                appleID, multiPersonWordByWord
-            )
-
-            Providers.MUSIXMATCH -> MusixmatchAPI().getLyrics(
-                musixmatchSongInfo,
-                unsyncedFallbackMusixmatch
-            )
-        }
-    }
+    suspend fun lookupLyrics(
+        request: LyricsRequest,
+        preferredProvider: Providers,
+    ): LyricsLookupOutcome = coordinator.lookup(request, preferredProvider)
 
     suspend fun getLyricsInLanguage(songId: Long, language: String): String? {
-        return MusixmatchAPI().getLyricsInLanguage(songId, language)
+        if (!Providers.MUSIXMATCH.isAvailable) {
+            throw ProviderRequestException(
+                LyricsFailure.ProviderUnavailable(Providers.MUSIXMATCH)
+            )
+        }
+        return musixmatchAPI.getLyricsInLanguage(songId, language)
     }
+
+    private fun createDefaultProviders(): List<LyricsProvider> {
+        val spotifyAPI = SpotifyAPI()
+        val spotifyLyricsAPI = SpotifyLyricsAPI()
+        val lrcLibAPI = LRCLibAPI()
+        val qqMusicAPI = QQMusicAPI()
+        val appleAPI = AppleAPI()
+        val neteaseAPI = NeteaseAPI()
+
+        return listOf(
+            provider(Providers.SPOTIFY) { request ->
+                val song = spotifyAPI.getSongInfo(request.toSongInfo(), request.offset)
+                val trackUrl = song.songLink ?: return@provider ProviderResult.NoMatch
+                val lyrics = spotifyLyricsAPI.getSyncedLyrics(trackUrl)
+                    ?: return@provider ProviderResult.NoLyrics
+                ProviderResult.Success(song, lyrics, LyricsTiming.SYNCED)
+            },
+            provider(Providers.LRCLIB) { request ->
+                val song = retrySerializationOnce {
+                    lrcLibAPI.getSongInfo(request.toSongInfo(), request.offset)
+                }
+                    ?: return@provider ProviderResult.NoMatch
+                val id = song.lrcLibID ?: return@provider ProviderResult.NoMatch
+                val lyrics = retrySerializationOnce { lrcLibAPI.getLyrics(id) }
+                    ?: return@provider ProviderResult.NoLyrics
+                when {
+                    !lyrics.syncedLyrics.isNullOrBlank() ->
+                        ProviderResult.Success(song, lyrics.syncedLyrics, LyricsTiming.SYNCED)
+                    request.allowUnsynced && !lyrics.plainLyrics.isNullOrBlank() ->
+                        ProviderResult.Success(song, lyrics.plainLyrics, LyricsTiming.UNSYNCED)
+                    else -> ProviderResult.NoLyrics
+                }
+            },
+            provider(Providers.QQMUSIC) { request ->
+                val song = qqMusicAPI.getSongInfo(request.toSongInfo(), request.offset)
+                    ?: return@provider ProviderResult.NoMatch
+                val payload = song.qqPayload ?: return@provider ProviderResult.NoMatch
+                val lyrics = qqMusicAPI.getSyncedLyrics(payload, request.multiPersonWordByWord)
+                    ?.takeIf(String::isNotBlank)
+                    ?: return@provider ProviderResult.NoLyrics
+                ProviderResult.Success(song, lyrics, LyricsTiming.SYNCED)
+            },
+            provider(Providers.APPLE) { request ->
+                val song = appleAPI.getSongInfo(request.toSongInfo(), request.offset)
+                    ?: return@provider ProviderResult.NoMatch
+                val id = song.appleID ?: return@provider ProviderResult.NoMatch
+                val lyrics = appleAPI.getSyncedLyrics(id, request.multiPersonWordByWord)
+                    ?.takeIf(String::isNotBlank)
+                    ?: return@provider ProviderResult.NoLyrics
+                ProviderResult.Success(song, lyrics, LyricsTiming.SYNCED)
+            },
+            provider(Providers.NETEASE, enabled = false) { request ->
+                val song = neteaseAPI.getSongInfo(request.toSongInfo(), request.offset)
+                    ?: return@provider ProviderResult.NoMatch
+                val id = song.neteaseID ?: return@provider ProviderResult.NoMatch
+                val lyrics = neteaseAPI.getSyncedLyrics(
+                    id,
+                    request.includeTranslation,
+                    request.includeRomanization,
+                )?.takeIf(String::isNotBlank) ?: return@provider ProviderResult.NoLyrics
+                ProviderResult.Success(song, lyrics, LyricsTiming.SYNCED)
+            },
+            provider(Providers.MUSIXMATCH, enabled = false) { request ->
+                val song = musixmatchAPI.getSongInfo(request.toSongInfo(), request.offset)
+                    ?: return@provider ProviderResult.NoMatch
+                val synced = song.syncedLyrics?.takeIf(String::isNotBlank)
+                if (synced != null) {
+                    ProviderResult.Success(song, synced, LyricsTiming.SYNCED)
+                } else {
+                    val unsynced = song.unsyncedLyrics?.takeIf(String::isNotBlank)
+                    if (request.allowUnsynced && unsynced != null) {
+                        ProviderResult.Success(song, unsynced, LyricsTiming.UNSYNCED)
+                    } else {
+                        ProviderResult.NoLyrics
+                    }
+                }
+            },
+        )
+    }
+
+    private fun provider(
+        id: Providers,
+        enabled: Boolean = true,
+        lookupBlock: suspend (LyricsRequest) -> ProviderResult,
+    ) = object : LyricsProvider {
+        override val id = id
+        override val isEnabled = enabled
+
+        override suspend fun lookup(request: LyricsRequest): ProviderResult = try {
+            lookupBlock(request)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            error.toProviderResult(id)
+        }
+    }
+}
+
+private fun LyricsRequest.toSongInfo() = SongInfo(title, artist)
+
+private suspend fun <T> retrySerializationOnce(block: suspend () -> T): T = try {
+    block()
+} catch (_: SerializationException) {
+    block()
+}
+
+private fun Throwable.toProviderResult(provider: Providers): ProviderResult = when (this) {
+    is ProviderRequestException -> ProviderResult.Failure(failure)
+    is EmptyQueryException -> ProviderResult.Failure(LyricsFailure.InvalidQuery)
+    is NoTrackFoundException -> ProviderResult.NoMatch
+    is UnknownHostException -> ProviderResult.Failure(LyricsFailure.DnsFailure(provider))
+    is HttpRequestTimeoutException,
+    is ConnectTimeoutException,
+    is SocketTimeoutException,
+    is java.net.SocketTimeoutException -> ProviderResult.Failure(LyricsFailure.Timeout(provider))
+    is SerializationException,
+    is InternalErrorException -> ProviderResult.Failure(LyricsFailure.InvalidResponse(provider))
+    else -> ProviderResult.Failure(LyricsFailure.ProviderUnavailable(provider))
 }

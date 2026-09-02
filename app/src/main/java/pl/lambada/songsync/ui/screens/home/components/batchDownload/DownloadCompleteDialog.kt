@@ -13,6 +13,7 @@ fun DownloadCompleteDialog(
     successCount: Int,
     noLyricsCount: Int,
     failedCount: Int,
+    rateLimitSeen: Boolean = false,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
@@ -25,6 +26,9 @@ fun DownloadCompleteDialog(
                 Text(text = stringResource(R.string.success, successCount))
                 Text(text = stringResource(R.string.no_lyrics, noLyricsCount))
                 Text(text = stringResource(R.string.failed, failedCount))
+                if (rateLimitSeen) {
+                    Text(text = stringResource(R.string.some_providers_rate_limited))
+                }
             }
         },
         onDismissRequest = onDismiss,

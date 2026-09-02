@@ -4,7 +4,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class ServerTimeResponse(
-    val serverTime: Long,
+    val serverTime: Long? = null,
 )
 
 @Serializable

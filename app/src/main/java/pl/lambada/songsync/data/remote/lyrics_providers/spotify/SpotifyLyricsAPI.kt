@@ -4,6 +4,8 @@ import io.ktor.client.request.get
 import io.ktor.client.request.parameter
 import io.ktor.client.statement.bodyAsText
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.SyncedLinesResponse
+import pl.lambada.songsync.data.remote.lyrics_providers.requireProviderSuccess
+import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.util.networking.Ktor.client
 import pl.lambada.songsync.util.networking.Ktor.json
 
@@ -20,9 +22,8 @@ class SpotifyLyricsAPI {
         val response = client.get(baseURL) {
             parameter("url", track_url)
         }
+        response.requireProviderSuccess(Providers.SPOTIFY)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
-        if (response.status.value !in 200..299)
-            return null
 
         val json = json.decodeFromString<SyncedLinesResponse>(responseBody)
 

@@ -39,17 +39,28 @@ class UpdateService {
      * @return True if the latest release is newer, false otherwise.
      */
     private fun isNewerRelease(context: Context, latestRelease: Release): Boolean {
-        val currentVersion = context
-            .getVersion()
-            .replace(".", "")
-            .toInt()
-        val latestVersion = latestRelease.tagName
-            .replace(".", "")
-            .replace("v", "")
-            .toInt()
-
-        return latestVersion > currentVersion
+        return isNewerVersion(context.getVersion(), latestRelease.tagName)
     }
+}
+
+internal fun isNewerVersion(current: String, latest: String): Boolean {
+    fun parse(value: String) = value
+        .trim()
+        .removePrefix("v")
+        .removePrefix("V")
+        .substringBefore('-')
+        .split('.')
+        .map { it.toIntOrNull() ?: 0 }
+
+    val currentParts = parse(current)
+    val latestParts = parse(latest)
+    val count = maxOf(currentParts.size, latestParts.size)
+    repeat(count) { index ->
+        val currentPart = currentParts.getOrElse(index) { 0 }
+        val latestPart = latestParts.getOrElse(index) { 0 }
+        if (latestPart != currentPart) return latestPart > currentPart
+    }
+    return false
 }
 
 /**

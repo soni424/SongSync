@@ -12,11 +12,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import pl.lambada.songsync.R
+import pl.lambada.songsync.data.remote.lyrics_providers.LyricsTiming
 import pl.lambada.songsync.util.Providers
 
 @Composable
 fun CloudProviderTitle(
     selectedProvider: Providers,
+    lyricsTiming: LyricsTiming? = null,
     onExpandProvidersRequest: () -> Unit,
 ) {
     Row(
@@ -30,6 +34,12 @@ fun CloudProviderTitle(
             contentDescription = null,
             Modifier.padding(end = 5.dp)
         )
-        Text(text = selectedProvider.displayName)
+        Text(
+            text = if (lyricsTiming == LyricsTiming.UNSYNCED) {
+                "${selectedProvider.displayName} · ${stringResource(R.string.unsynced_lyrics_label)}"
+            } else {
+                selectedProvider.displayName
+            }
+        )
     }
 }

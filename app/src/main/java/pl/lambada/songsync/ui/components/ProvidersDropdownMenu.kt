@@ -13,24 +13,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.datastore.preferences.core.stringPreferencesKey
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import pl.lambada.songsync.R
 import pl.lambada.songsync.ui.components.dropdown.AnimatedDropdownMenu
 import pl.lambada.songsync.util.Providers
-import pl.lambada.songsync.util.dataStore
-import pl.lambada.songsync.util.set
 
 @Composable
 fun ProvidersDropdownMenu(
@@ -58,8 +51,6 @@ fun ProvidersDropdownMenuContent(
     onProviderSelectRequest: (Providers) -> Unit,
 ) = Column {
     val providers = Providers.entries.toTypedArray()
-    val dataStore = LocalContext.current.dataStore
-    val scope = rememberCoroutineScope()
     Text(
         text = stringResource(id = R.string.provider),
         modifier = Modifier.padding(start = 18.dp, top = 8.dp),
@@ -70,7 +61,11 @@ fun ProvidersDropdownMenuContent(
             text = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = it.displayName,
+                        text = if (it.isAvailable) {
+                            it.displayName
+                        } else {
+                            "${it.displayName} (${stringResource(R.string.temporarily_unavailable)})"
+                        },
                         modifier = Modifier.padding(start = 6.dp)
                     )
                     if (it.hasWordByWord)
@@ -94,30 +89,18 @@ fun ProvidersDropdownMenuContent(
                     Spacer(modifier = Modifier.weight(1f))
                     RadioButton(
                         selected = selectedProvider == it,
+                        enabled = it.isAvailable,
                         onClick = {
                             onProviderSelectRequest(it)
-                            dataStore.set(
-                                stringPreferencesKey("provider"),
-                                it.displayName
-                            )
-                            scope.launch {
-                                delay(200)
-                                onDismissRequest()
-                            }
+                            onDismissRequest()
                         }
                     )
                 }
             },
+            enabled = it.isAvailable,
             onClick = {
                 onProviderSelectRequest(it)
-                dataStore.set(
-                    stringPreferencesKey("provider"),
-                    it.displayName
-                )
-                scope.launch {
-                    delay(200)
-                    onDismissRequest()
-                }
+                onDismissRequest()
             }
         )
     }
