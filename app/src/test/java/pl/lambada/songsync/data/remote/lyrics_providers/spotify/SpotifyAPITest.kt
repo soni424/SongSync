@@ -16,11 +16,15 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.util.SpotifyLyricsNotFoundException
+import pl.lambada.songsync.util.SpotifyFailureKind
+import pl.lambada.songsync.util.SpotifyOperation
 import pl.lambada.songsync.util.SpotifyRateLimitException
 import pl.lambada.songsync.util.SpotifyServiceException
 import pl.lambada.songsync.util.SpotifySessionExpiredException
 import pl.lambada.songsync.util.networking.Ktor
+import java.io.IOException
 import java.util.Base64
 
 class SpotifyAPITest {
@@ -123,6 +127,158 @@ class SpotifyAPITest {
         assertEquals("[00:01.23]First line", fixture.api.getSyncedLyrics("track-id"))
     }
 
+    @Test
+    fun `Spotify search accepts minimal track data and sends plain search text`() = runTest {
+        val fixture = fixture(
+            searchBody = """{"data":{"searchV2":{"tracksV2":{"items":[{"item":{"data":{"id":"spotify-track","name":"Bling-Bang-Bang-Born","albumOfTrack":{"coverArt":{"sources":[{"url":"https://image.test/cover.jpg"}]}},"artists":{"items":[{"profile":{"name":"Creepy Nuts"}}]}}}}]}}}}""",
+        )
+
+        val result = fixture.api.getSongInfo(SongInfo("Bling-Bang-Bang-Born", "Creepy Nuts"))
+
+        assertEquals("spotify-track", result.spotifyID)
+        assertEquals("Creepy Nuts", result.artistName)
+        val searchRequest = fixture.requests.single { it.url.host == "api-partner.spotify.com" }
+        assertTrue(searchRequest.url.parameters["variables"]!!.contains("Bling-Bang-Bang-Born Creepy Nuts"))
+        assertFalse(searchRequest.url.parameters["variables"]!!.contains("Bling-Bang-Bang-Born+Creepy+Nuts"))
+    }
+
+    @Test
+    fun `client token HTTP failure exposes a safe stage and status code`() = runTest {
+        val fixture = fixture(clientTokenStatus = HttpStatusCode.ServiceUnavailable)
+
+        val error = expectFailure<SpotifyServiceException> {
+            fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
+        }
+
+        assertEquals(SpotifyOperation.CLIENT_TOKEN, error.diagnostic.operation)
+        assertEquals(SpotifyFailureKind.HTTP, error.diagnostic.kind)
+        assertEquals("SPOTIFY-CLIENT-503", error.diagnostic.code)
+    }
+
+    @Test
+    fun `malformed search response is identified as search parsing`() = runTest {
+        val fixture = fixture(searchBody = "{not-json")
+
+        val error = expectFailure<SpotifyServiceException> {
+            fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
+        }
+
+        assertEquals("SPOTIFY-SEARCH-PARSE", error.diagnostic.code)
+        assertEquals("RESPONSE_PARSE", error.diagnostic.stage)
+    }
+
+    @Test
+    fun `search HTTP failure preserves its status without exposing secrets`() = runTest {
+        val fixture = fixture(searchStatus = HttpStatusCode.BadRequest)
+
+        val error = expectFailure<SpotifyServiceException> {
+            fixture.api.getSongInfo(SongInfo("private-song", "private-artist"))
+        }
+        val report = error.diagnostic.toReport("4.3.3-diagnostic")
+
+        assertEquals("SPOTIFY-SEARCH-400", error.diagnostic.code)
+        assertFalse(report.contains("private-cookie"))
+        assertFalse(report.contains("access-token"))
+        assertFalse(report.contains("client-token"))
+        assertFalse(report.contains("private-song"))
+        assertFalse(report.contains("private-artist"))
+        assertFalse(report.contains("Authorization", ignoreCase = true))
+    }
+
+    @Test
+    fun `lyrics server failure identifies the lyrics stage`() = runTest {
+        val fixture = fixture(lyricsStatuses = mutableListOf(HttpStatusCode.InternalServerError))
+
+        val error = expectFailure<SpotifyServiceException> { fixture.api.getSyncedLyrics("track-id") }
+
+        assertEquals("SPOTIFY-LYRICS-500", error.diagnostic.code)
+    }
+
+    @Test
+    fun `connection test reports each completed Spotify operation`() = runTest {
+        val fixture = fixture(
+            searchBody = """{"data":{"searchV2":{"tracksV2":{"items":[{"item":{"data":{"id":"spotify-track","name":"Diagnostic Track","albumOfTrack":{"coverArt":{"sources":[]}},"artists":{"items":[{"profile":{"name":"Diagnostic Artist"}}]}}}}]}}}}""",
+        )
+
+        val report = fixture.api.runConnectionTest()
+
+        assertNull(report.failure)
+        assertEquals(
+            listOf(
+                SpotifyOperation.BOOTSTRAP,
+                SpotifyOperation.SERVER_TIME,
+                SpotifyOperation.ACCESS_TOKEN,
+                SpotifyOperation.CLIENT_TOKEN,
+                SpotifyOperation.TRACK_SEARCH,
+                SpotifyOperation.LYRICS_REQUEST,
+            ),
+            report.passed,
+        )
+    }
+
+    @Test
+    fun `network failure identifies the first unreachable Spotify stage`() = runTest {
+        val fixture = fixture(networkFailureHost = "open.spotify.com")
+
+        val error = expectFailure<SpotifyServiceException> {
+            fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
+        }
+
+        assertEquals("SPOTIFY-BOOTSTRAP-NETWORK", error.diagnostic.code)
+    }
+
+    @Test
+    fun `bootstrap server time and access HTTP failures retain their boundaries`() = runTest {
+        val bootstrapError = expectFailure<SpotifyServiceException> {
+            fixture(bootstrapStatus = HttpStatusCode.InternalServerError).api.ensureAuthenticated()
+        }
+        val timeError = expectFailure<SpotifyServiceException> {
+            fixture(serverTimeStatus = HttpStatusCode.ServiceUnavailable).api.ensureAuthenticated()
+        }
+        val accessError = expectFailure<SpotifySessionExpiredException> {
+            fixture(accessStatus = HttpStatusCode.Forbidden).api.ensureAuthenticated()
+        }
+
+        assertEquals("SPOTIFY-BOOTSTRAP-500", bootstrapError.diagnostic.code)
+        assertEquals("SPOTIFY-TIME-503", timeError.diagnostic.code)
+        assertEquals("SPOTIFY-ACCESS-403", accessError.diagnostic.code)
+    }
+
+    @Test
+    fun `persistent invalid client token is safe and distinct`() = runTest {
+        val fixture = fixture(
+            lyricsStatuses = mutableListOf(HttpStatusCode.BadRequest, HttpStatusCode.BadRequest),
+        )
+
+        val error = expectFailure<SpotifyServiceException> { fixture.api.getSyncedLyrics("track-id") }
+
+        assertEquals("SPOTIFY-LYRICS-400-INVALID-CLIENT", error.diagnostic.code)
+        assertEquals(SpotifyFailureKind.INVALID_CLIENT_TOKEN, error.diagnostic.kind)
+    }
+
+    @Test
+    fun `client token parser accepts omitted refresh time and string expiry`() = runTest {
+        val fixture = fixture(
+            clientTokenBody = """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":"3600"}}""",
+            searchBody = """{"data":{"searchV2":{"tracksV2":{"items":[{"item":{"data":{"id":"spotify-track","name":"B-Side Blues","albumOfTrack":{"coverArt":{"sources":[]}},"artists":{"items":[{"profile":{"name":"OFFICIAL HIGE DANDISM"}}]}}}}]}}}}""",
+        )
+
+        val song = fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
+
+        assertEquals("spotify-track", song.spotifyID)
+    }
+
+    @Test
+    fun `search 404 remains provider failure rather than no lyrics`() = runTest {
+        val fixture = fixture(searchStatus = HttpStatusCode.NotFound)
+
+        val error = expectFailure<SpotifyServiceException> {
+            fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
+        }
+
+        assertEquals("SPOTIFY-SEARCH-404", error.diagnostic.code)
+    }
+
     private fun fixture(
         lyricsStatuses: MutableList<HttpStatusCode> = mutableListOf(HttpStatusCode.OK),
         lyricsBody: String = """{"lyrics":{"syncType":"LINE_SYNCED","lines":[{"startTimeMs":"1230","words":"First line"}]}}""",
@@ -131,26 +287,55 @@ class SpotifyAPITest {
         accessExpiresAt: Long = 4_102_444_800_000,
         clock: () -> Long = { 1_700_000_000_000L },
         secretSourcesUnavailable: Boolean = false,
+        searchBody: String = """{"data":{"searchV2":{"tracksV2":{"items":[]}}}}""",
+        searchStatus: HttpStatusCode = HttpStatusCode.OK,
+        clientTokenStatus: HttpStatusCode = HttpStatusCode.OK,
+        clientTokenBody: String = """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":3600,"refresh_after_seconds":1800}}""",
+        bootstrapStatus: HttpStatusCode = HttpStatusCode.OK,
+        serverTimeStatus: HttpStatusCode = HttpStatusCode.OK,
+        accessStatus: HttpStatusCode = HttpStatusCode.OK,
+        networkFailureHost: String? = null,
     ): Fixture {
         val requests = mutableListOf<HttpRequestData>()
         val webConfig = Base64.getEncoder().encodeToString("""{"clientVersion":"1.3.2.test"}""".toByteArray())
         val engine = MockEngine { request ->
             requests += request
+            if (request.url.host == networkFailureHost) {
+                throw IOException("Simulated private-cookie access-token client-token failure")
+            }
             when {
                 request.url.host == "raw.githubusercontent.com" -> if (secretSourcesUnavailable) {
                     respond("", HttpStatusCode.ServiceUnavailable)
                 } else jsonResponse("""[{"version":61,"secret":[44,55,47,42]}]""")
                 request.url.host == "code.thetadev.de" -> respond("", HttpStatusCode.ServiceUnavailable)
                 request.url.host == "open.spotify.com" && request.url.encodedPath == "/" -> respond(
-                    content = """<script id="appServerConfig" type="text/plain">$webConfig</script>""",
+                    content = if (bootstrapStatus == HttpStatusCode.OK) {
+                        """<script id="appServerConfig" type="text/plain">$webConfig</script>"""
+                    } else "{}",
+                    status = bootstrapStatus,
                     headers = headersOf(HttpHeaders.SetCookie, "sp_t=device-id; Path=/")
                 )
-                request.url.encodedPath == "/api/server-time" -> jsonResponse("""{"serverTime":1700000000}""")
-                request.url.encodedPath == "/api/token" -> jsonResponse(
-                    """{"clientId":"client-id","accessToken":"access-token","accessTokenExpirationTimestampMs":$accessExpiresAt,"isAnonymous":$isAnonymous}"""
+                request.url.encodedPath == "/api/server-time" -> respond(
+                    content = if (serverTimeStatus == HttpStatusCode.OK) """{"serverTime":1700000000}""" else "{}",
+                    status = serverTimeStatus,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
-                request.url.host == "clienttoken.spotify.com" -> jsonResponse(
-                    """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":3600,"refresh_after_seconds":1800}}"""
+                request.url.encodedPath == "/api/token" -> respond(
+                    content = if (accessStatus == HttpStatusCode.OK) {
+                        """{"clientId":"client-id","accessToken":"access-token","accessTokenExpirationTimestampMs":$accessExpiresAt,"isAnonymous":$isAnonymous}"""
+                    } else "{}",
+                    status = accessStatus,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                request.url.host == "clienttoken.spotify.com" -> respond(
+                    content = if (clientTokenStatus == HttpStatusCode.OK) clientTokenBody else "{}",
+                    status = clientTokenStatus,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                )
+                request.url.host == "api-partner.spotify.com" -> respond(
+                    content = if (searchStatus == HttpStatusCode.OK) searchBody else "{}",
+                    status = searchStatus,
+                    headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
                 request.url.host == "spclient.wg.spotify.com" -> {
                     val status = if (lyricsStatuses.size > 1) lyricsStatuses.removeAt(0) else lyricsStatuses.first()

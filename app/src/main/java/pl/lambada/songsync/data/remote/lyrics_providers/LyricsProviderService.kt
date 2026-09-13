@@ -13,6 +13,10 @@ import pl.lambada.songsync.util.InternalErrorException
 import pl.lambada.songsync.util.NoTrackFoundException
 import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.util.SpotifyProviderException
+import pl.lambada.songsync.util.SpotifyConnectionTestReport
+import pl.lambada.songsync.util.SpotifyDiagnostic
+import pl.lambada.songsync.util.SpotifyFailureKind
+import pl.lambada.songsync.util.SpotifyOperation
 import pl.lambada.songsync.util.SpotifyServiceException
 import java.io.FileNotFoundException
 import java.net.UnknownHostException
@@ -47,12 +51,15 @@ class LyricsProviderService(
     fun hasSpotifyCookie(): Boolean = spotifyAPI.hasCookie()
     suspend fun verifyAndSaveSpotifyCookie(value: String) = spotifyAPI.verifyAndSaveCookie(value)
     fun clearSpotifyCookie() = spotifyAPI.clearCookie()
+    suspend fun runSpotifyConnectionTest(): SpotifyConnectionTestReport = spotifyAPI.runConnectionTest()
     suspend fun preflightSpotifyAuthentication() = try {
         spotifyAPI.ensureAuthenticated()
     } catch (error: SpotifyProviderException) {
         throw error
     } catch (_: Exception) {
-        throw SpotifyServiceException()
+        throw SpotifyServiceException(
+            SpotifyDiagnostic(SpotifyOperation.ACCESS_TOKEN, SpotifyFailureKind.UNEXPECTED)
+        )
     }
 
     /**
@@ -102,7 +109,9 @@ class LyricsProviderService(
                 is EmptyQueryException,
                 is SpotifyProviderException -> throw e
                 else -> if (provider == Providers.SPOTIFY) {
-                    throw SpotifyServiceException()
+                    throw SpotifyServiceException(
+                        SpotifyDiagnostic(SpotifyOperation.TRACK_SEARCH, SpotifyFailureKind.UNEXPECTED)
+                    )
                 } else {
                     throw InternalErrorException(Log.getStackTraceString(e))
                 }
@@ -131,7 +140,9 @@ class LyricsProviderService(
             } catch (error: SpotifyProviderException) {
                 throw error
             } catch (_: Exception) {
-                throw SpotifyServiceException()
+                throw SpotifyServiceException(
+                    SpotifyDiagnostic(SpotifyOperation.LYRICS_REQUEST, SpotifyFailureKind.UNEXPECTED)
+                )
             }
             Providers.LRCLIB -> LRCLibAPI().getSyncedLyrics(lrcLibID)
             Providers.NETEASE -> NeteaseAPI().getSyncedLyrics(

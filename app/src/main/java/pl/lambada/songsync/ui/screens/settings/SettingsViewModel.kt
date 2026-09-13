@@ -14,6 +14,7 @@ import pl.lambada.songsync.data.remote.UpdateService
 import pl.lambada.songsync.data.remote.UpdateState
 import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
 import pl.lambada.songsync.util.SpotifyProviderException
+import pl.lambada.songsync.util.SpotifyConnectionTestReport
 import pl.lambada.songsync.util.SpotifyAuthenticationRequiredException
 import pl.lambada.songsync.util.SpotifySessionExpiredException
 import pl.lambada.songsync.util.showToast
@@ -35,6 +36,9 @@ class SettingsViewModel(
     var spotifyError by mutableStateOf<String?>(null)
         private set
 
+    var spotifyTestState by mutableStateOf<SpotifyConnectionTestState>(SpotifyConnectionTestState.IDLE)
+        private set
+
     fun verifyAndSaveSpotifyCookie(value: String) {
         val previousState = if (lyricsProviderService.hasSpotifyCookie()) {
             SpotifyConnectionState.CONNECTED
@@ -43,6 +47,7 @@ class SettingsViewModel(
         }
         spotifyState = SpotifyConnectionState.VERIFYING
         spotifyError = null
+        spotifyTestState = SpotifyConnectionTestState.IDLE
         viewModelScope.launch {
             try {
                 lyricsProviderService.verifyAndSaveSpotifyCookie(value)
@@ -67,6 +72,17 @@ class SettingsViewModel(
         lyricsProviderService.clearSpotifyCookie()
         spotifyState = SpotifyConnectionState.NOT_CONFIGURED
         spotifyError = null
+        spotifyTestState = SpotifyConnectionTestState.IDLE
+    }
+
+    fun runSpotifyConnectionTest() {
+        if (!lyricsProviderService.hasSpotifyCookie()) return
+        spotifyTestState = SpotifyConnectionTestState.RUNNING
+        viewModelScope.launch {
+            spotifyTestState = SpotifyConnectionTestState.COMPLETE(
+                lyricsProviderService.runSpotifyConnectionTest()
+            )
+        }
     }
 
     fun dismissUpdate() { updateState = UpdateState.Idle }
@@ -106,4 +122,10 @@ enum class SpotifyConnectionState {
     VERIFYING,
     CONNECTED,
     INVALID_OR_EXPIRED,
+}
+
+sealed interface SpotifyConnectionTestState {
+    data object IDLE : SpotifyConnectionTestState
+    data object RUNNING : SpotifyConnectionTestState
+    data class COMPLETE(val report: SpotifyConnectionTestReport) : SpotifyConnectionTestState
 }

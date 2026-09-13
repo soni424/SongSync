@@ -182,6 +182,15 @@
     <string name="spotify_rate_limited">Spotify is rate limiting requests. Please try again later.</string>
     <string name="spotify_provider_unavailable">Spotify Lyrics is temporarily unavailable.</string>
     <string name="open_settings">Open Settings</string>
+    <string name="spotify_run_connection_test">Run connection test</string>
+    <string name="spotify_connection_test_running">Testing Spotify…</string>
+    <string name="spotify_connection_test_passed">Passed stages: %1$s</string>
+    <string name="spotify_connection_test_success">All Spotify stages passed.</string>
+    <string name="spotify_connection_test_failed">Connection test stopped at %1$s</string>
+    <string name="spotify_copy_diagnostic">Copy diagnostic</string>
+    <string name="spotify_diagnostic_copied">Safe diagnostic copied</string>
+    <string name="spotify_diagnostic_code">Diagnostic: %1$s</string>
+    <string name="spotify_no_stages_passed">none</string>
     <plurals name="songs_count">
         <item quantity="one">%1$d song</item>
         <item quantity="other">%1$d songs</item>

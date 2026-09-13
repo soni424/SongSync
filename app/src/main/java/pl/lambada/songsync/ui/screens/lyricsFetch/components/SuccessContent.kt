@@ -18,7 +18,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import pl.lambada.songsync.R
 import pl.lambada.songsync.domain.model.SongInfo
@@ -32,6 +35,9 @@ import pl.lambada.songsync.util.SpotifyRateLimitException
 import pl.lambada.songsync.util.SpotifyServiceException
 import pl.lambada.songsync.util.SpotifySessionExpiredException
 import pl.lambada.songsync.util.SpotifyUnsyncedLyricsException
+import pl.lambada.songsync.util.SpotifyProviderException
+import pl.lambada.songsync.util.ext.getVersion
+import pl.lambada.songsync.util.showToast
 
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -56,6 +62,8 @@ fun SharedTransitionScope.SuccessContent(
     onExpandProvidersRequest: () -> Unit,
     onOpenSettings: () -> Unit,
 ) = Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
     Spacer(modifier = Modifier.height(10.dp))
     CloudProviderTitle(
         selectedProvider = selectedProvider,
@@ -135,6 +143,18 @@ fun SharedTransitionScope.SuccessContent(
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(stringResource(message))
+                        val spotifyError = it.exception as? SpotifyProviderException
+                        if (spotifyError != null) {
+                            Text(stringResource(R.string.spotify_diagnostic_code, spotifyError.diagnostic.code))
+                            OutlinedButton(onClick = {
+                                clipboardManager.setText(
+                                    AnnotatedString(spotifyError.diagnostic.toReport(context.getVersion()))
+                                )
+                                showToast(context, R.string.spotify_diagnostic_copied)
+                            }) {
+                                Text(stringResource(R.string.spotify_copy_diagnostic))
+                            }
+                        }
                         if (it.exception is SpotifyAuthenticationRequiredException ||
                             it.exception is SpotifySessionExpiredException
                         ) {

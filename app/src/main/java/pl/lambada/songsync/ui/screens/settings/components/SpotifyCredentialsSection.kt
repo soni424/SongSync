@@ -16,21 +16,32 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import pl.lambada.songsync.R
 import pl.lambada.songsync.ui.screens.settings.SpotifyConnectionState
+import pl.lambada.songsync.ui.screens.settings.SpotifyConnectionTestState
+import pl.lambada.songsync.util.ext.getVersion
+import pl.lambada.songsync.util.showToast
 
 @Composable
 fun SpotifyCredentialsSection(
     state: SpotifyConnectionState,
     error: String?,
+    testState: SpotifyConnectionTestState,
     onSave: (String) -> Unit,
     onClear: () -> Unit,
+    onRunTest: () -> Unit,
 ) {
     var cookie by remember { mutableStateOf("") }
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
     val verifying = state == SpotifyConnectionState.VERIFYING
+    val testing = testState == SpotifyConnectionTestState.RUNNING
     val status = when (state) {
         SpotifyConnectionState.NOT_CONFIGURED -> stringResource(R.string.spotify_not_configured)
         SpotifyConnectionState.VERIFYING -> stringResource(R.string.spotify_verifying)
@@ -79,6 +90,46 @@ fun SpotifyCredentialsSection(
                 modifier = Modifier.weight(1f),
             ) {
                 Text(stringResource(R.string.spotify_save_verify))
+            }
+        }
+        OutlinedButton(
+            onClick = onRunTest,
+            enabled = state == SpotifyConnectionState.CONNECTED && !verifying && !testing,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(
+                stringResource(
+                    if (testing) R.string.spotify_connection_test_running
+                    else R.string.spotify_run_connection_test
+                )
+            )
+        }
+        if (testState is SpotifyConnectionTestState.COMPLETE) {
+            val report = testState.report
+            val passed = report.passed.joinToString(", ") {
+                it.name.lowercase().replace('_', ' ')
+            }.ifEmpty { stringResource(R.string.spotify_no_stages_passed) }
+            Text(
+                stringResource(R.string.spotify_connection_test_passed, passed),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                report.failure?.let {
+                    stringResource(R.string.spotify_connection_test_failed, it.diagnostic.code)
+                } ?: stringResource(R.string.spotify_connection_test_success),
+                color = if (report.failure == null) {
+                    MaterialTheme.colorScheme.tertiary
+                } else MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedButton(
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(report.toReport(context.getVersion())))
+                    showToast(context, R.string.spotify_diagnostic_copied)
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.spotify_copy_diagnostic))
             }
         }
     }

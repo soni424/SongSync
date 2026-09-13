@@ -94,8 +94,10 @@ fun SettingsScreen(
                 SpotifyCredentialsSection(
                     state = viewModel.spotifyState,
                     error = viewModel.spotifyError,
+                    testState = viewModel.spotifyTestState,
                     onSave = viewModel::verifyAndSaveSpotifyCookie,
                     onClear = viewModel::clearSpotifyCookie,
+                    onRunTest = viewModel::runSpotifyConnectionTest,
                 )
             }
             item {
