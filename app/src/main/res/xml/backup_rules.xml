@@ -9,4 +9,7 @@
     <exclude
         domain="root"
         path="." />
+    <exclude
+        domain="sharedpref"
+        path="spotify_credentials.xml" />
 </full-backup-content>

@@ -16,10 +16,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.ViewCompat
@@ -28,8 +24,9 @@ import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import pl.lambada.songsync.data.UserSettingsController
 import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
+import pl.lambada.songsync.data.remote.lyrics_providers.spotify.AndroidSpotifyCredentialStore
+import pl.lambada.songsync.data.remote.lyrics_providers.spotify.SpotifyAPI
 import pl.lambada.songsync.ui.Navigator
-import pl.lambada.songsync.ui.components.dialogs.NoInternetDialog
 import pl.lambada.songsync.ui.theme.SongSyncTheme
 import pl.lambada.songsync.util.dataStore
 import java.io.File
@@ -38,7 +35,7 @@ import java.io.File
  * The main activity of the SongSync app.
  */
 class MainActivity : ComponentActivity() {
-    private val lyricsProviderService = LyricsProviderService()
+    private lateinit var lyricsProviderService: LyricsProviderService
 
     @SuppressLint("SuspiciousIndentation")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,27 +50,17 @@ class MainActivity : ComponentActivity() {
 
         val dataStore = this.dataStore
         val userSettingsController = UserSettingsController(dataStore)
+        lyricsProviderService = LyricsProviderService(
+            SpotifyAPI(AndroidSpotifyCredentialStore(applicationContext))
+        )
         checkOrCreateDownloadSubFolder()
         createNotificationChannel()
 
         setContent {
             val navController = rememberNavController()
-            var networkError by rememberSaveable { mutableStateOf<Boolean?>(null) }
             val context = LocalContext.current
-
-            LaunchedEffect(Unit) {
-                context.cacheDir.deleteRecursively()
-                if (networkError == null) lyricsProviderService
-                    .refreshSpotifyToken()
-                    .onFailure { networkError = true }
-            }
-
+            LaunchedEffect(Unit) { context.cacheDir.deleteRecursively() }
             SongSyncTheme(pureBlack = userSettingsController.pureBlack) {
-                if (networkError == true) NoInternetDialog(
-                    onConfirm = ::finishAndRemoveTask,
-                    onIgnore = { networkError = false }
-                )
-
                 // check in case user revoked permissions later
                 if (userSettingsController.passedInit)
                     CheckForPermissions(

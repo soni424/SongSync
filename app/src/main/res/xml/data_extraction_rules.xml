@@ -8,10 +8,16 @@
         <exclude
             domain="root"
             path="." />
+        <exclude
+            domain="sharedpref"
+            path="spotify_credentials.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude
             domain="root"
             path="." />
+        <exclude
+            domain="sharedpref"
+            path="spotify_credentials.xml" />
     </device-transfer>
 </data-extraction-rules>

@@ -188,7 +188,12 @@ fun HomeScreenLoaded(
     if (isBatchDownload) {
         BatchDownloadLyrics(
             viewModel = viewModel,
-            onDone = { onBatchDownloadState(false) })
+            onDone = { onBatchDownloadState(false) },
+            onOpenSettings = {
+                onBatchDownloadState(false)
+                navController.navigate(pl.lambada.songsync.ui.ScreenSettings)
+            },
+        )
     }
 
     PullToRefreshBox(

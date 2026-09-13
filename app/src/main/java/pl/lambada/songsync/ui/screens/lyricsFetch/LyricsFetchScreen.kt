@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import pl.lambada.songsync.R
 import pl.lambada.songsync.ui.components.ProvidersDropdownMenu
+import pl.lambada.songsync.ui.ScreenSettings
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.CloudProviderTitle
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.FailedDialogue
 import pl.lambada.songsync.ui.screens.lyricsFetch.components.LocalSongContent
@@ -223,12 +224,14 @@ fun SharedTransitionScope.LyricsFetchScreen(
                             viewModel.userSettingsController.selectedProvider != Providers.MUSIXMATCH,
                         selectedProvider = viewModel.userSettingsController.selectedProvider,
                         onExpandProvidersRequest = { expandedProviders = true },
+                        onOpenSettings = { navController.navigate(ScreenSettings) },
                     )
 
                     is QueryStatus.Failed -> FailedDialogue(
                         onDismissRequest = { viewModel.queryState = QueryStatus.NotSubmitted },
                         onOkRequest = { viewModel.queryState = QueryStatus.NotSubmitted },
-                        exception = queryState.exception
+                        exception = queryState.exception,
+                        onOpenSettings = { navController.navigate(ScreenSettings) },
                     )
 
                     QueryStatus.NoConnection -> NoConnectionDialogue(

@@ -73,7 +73,7 @@ fun Navigator(
             }
             animatedComposable<ScreenSettings> {
                 SettingsScreen(
-                    viewModel = viewModel { SettingsViewModel() },
+                    viewModel = viewModel { SettingsViewModel(lyricsProviderService) },
                     userSettingsController,
                     navController = navController
                 )

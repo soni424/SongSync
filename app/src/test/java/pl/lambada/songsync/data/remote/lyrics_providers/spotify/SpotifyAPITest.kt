@@ -1,0 +1,208 @@
+package pl.lambada.songsync.data.remote.lyrics_providers.spotify
+
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.MockRequestHandleScope
+import io.ktor.client.engine.mock.respond
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.HttpRequestData
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+import pl.lambada.songsync.util.SpotifyLyricsNotFoundException
+import pl.lambada.songsync.util.SpotifyRateLimitException
+import pl.lambada.songsync.util.SpotifyServiceException
+import pl.lambada.songsync.util.SpotifySessionExpiredException
+import pl.lambada.songsync.util.networking.Ktor
+import java.util.Base64
+
+class SpotifyAPITest {
+    @Test
+    fun `authenticated Spotify lyrics are returned as LRC without using a proxy`() = runTest {
+        val fixture = fixture()
+
+        assertEquals("[00:01.23]First line", fixture.api.getSyncedLyrics("track-id"))
+        assertFalse(fixture.requests.any { it.url.host.contains("alwaysdata") })
+    }
+
+    @Test
+    fun `anonymous token rejects cookie without saving it`() = runTest {
+        val fixture = fixture(isAnonymous = true, initialCookie = null)
+
+        expectFailure<SpotifySessionExpiredException> {
+            fixture.api.verifyAndSaveCookie("sp_dc=new-cookie; Path=/")
+        }
+        assertNull(fixture.store.read())
+    }
+
+    @Test
+    fun `save and verify accepts a full sp_dc assignment but stores only its value`() = runTest {
+        val fixture = fixture(initialCookie = null)
+
+        fixture.api.verifyAndSaveCookie("sp_dc=new-cookie; Path=/")
+
+        assertEquals("new-cookie", fixture.store.read())
+        assertEquals(
+            "Cookie verification must not depend on Spotify's separate client-token service",
+            0,
+            fixture.requests.count { it.url.host == "clienttoken.spotify.com" },
+        )
+    }
+
+    @Test
+    fun `genuine lyrics 404 is not confused with provider failure`() = runTest {
+        val fixture = fixture(lyricsStatuses = mutableListOf(HttpStatusCode.NotFound))
+
+        expectFailure<SpotifyLyricsNotFoundException> { fixture.api.getSyncedLyrics("track-id") }
+    }
+
+    @Test
+    fun `rate limit has its own failure`() = runTest {
+        val fixture = fixture(lyricsStatuses = mutableListOf(HttpStatusCode.TooManyRequests))
+
+        expectFailure<SpotifyRateLimitException> { fixture.api.getSyncedLyrics("track-id") }
+    }
+
+    @Test
+    fun `malformed successful payload is provider unavailable not no lyrics`() = runTest {
+        val fixture = fixture(lyricsBody = "{not-json")
+
+        expectFailure<SpotifyServiceException> { fixture.api.getSyncedLyrics("track-id") }
+    }
+
+    @Test
+    fun `invalid client token refreshes session once`() = runTest {
+        val fixture = fixture(
+            lyricsStatuses = mutableListOf(HttpStatusCode.BadRequest, HttpStatusCode.OK)
+        )
+
+        assertEquals("[00:01.23]First line", fixture.api.getSyncedLyrics("track-id"))
+        assertEquals(2, fixture.requests.count { it.url.host == "clienttoken.spotify.com" })
+        assertEquals(2, fixture.requests.count { it.url.host == "spclient.wg.spotify.com" })
+    }
+
+    @Test
+    fun `expired access token is refreshed from the in-memory cache`() = runTest {
+        var now = 1_700_000_000_000L
+        val fixture = fixture(
+            accessExpiresAt = now + 60_000,
+            clock = { now },
+        )
+
+        fixture.api.getSyncedLyrics("track-id")
+        now += 31_000
+        fixture.api.getSyncedLyrics("track-id")
+
+        assertEquals(2, fixture.requests.count { it.url.encodedPath == "/api/token" })
+    }
+
+    @Test
+    fun `private cookie is sent only to Spotify token endpoint and never exposed in errors`() = runTest {
+        val fixture = fixture(lyricsStatuses = mutableListOf(HttpStatusCode.NotFound))
+        val error = expectFailure<SpotifyLyricsNotFoundException> { fixture.api.getSyncedLyrics("track-id") }
+
+        val cookieRequests = fixture.requests.filter { it.headers[HttpHeaders.Cookie]?.contains("private-cookie") == true }
+        assertEquals(1, cookieRequests.size)
+        assertEquals("/api/token", cookieRequests.single().url.encodedPath)
+        assertFalse(error.toString().contains("private-cookie"))
+        assertTrue(fixture.requests.filterNot { it.url.encodedPath == "/api/token" }
+            .none { it.headers.toString().contains("private-cookie") })
+    }
+
+    @Test
+    fun `bundled secret keeps authentication available when remote secret sources are offline`() = runTest {
+        val fixture = fixture(secretSourcesUnavailable = true)
+
+        assertEquals("[00:01.23]First line", fixture.api.getSyncedLyrics("track-id"))
+    }
+
+    private fun fixture(
+        lyricsStatuses: MutableList<HttpStatusCode> = mutableListOf(HttpStatusCode.OK),
+        lyricsBody: String = """{"lyrics":{"syncType":"LINE_SYNCED","lines":[{"startTimeMs":"1230","words":"First line"}]}}""",
+        isAnonymous: Boolean = false,
+        initialCookie: String? = "private-cookie",
+        accessExpiresAt: Long = 4_102_444_800_000,
+        clock: () -> Long = { 1_700_000_000_000L },
+        secretSourcesUnavailable: Boolean = false,
+    ): Fixture {
+        val requests = mutableListOf<HttpRequestData>()
+        val webConfig = Base64.getEncoder().encodeToString("""{"clientVersion":"1.3.2.test"}""".toByteArray())
+        val engine = MockEngine { request ->
+            requests += request
+            when {
+                request.url.host == "raw.githubusercontent.com" -> if (secretSourcesUnavailable) {
+                    respond("", HttpStatusCode.ServiceUnavailable)
+                } else jsonResponse("""[{"version":61,"secret":[44,55,47,42]}]""")
+                request.url.host == "code.thetadev.de" -> respond("", HttpStatusCode.ServiceUnavailable)
+                request.url.host == "open.spotify.com" && request.url.encodedPath == "/" -> respond(
+                    content = """<script id="appServerConfig" type="text/plain">$webConfig</script>""",
+                    headers = headersOf(HttpHeaders.SetCookie, "sp_t=device-id; Path=/")
+                )
+                request.url.encodedPath == "/api/server-time" -> jsonResponse("""{"serverTime":1700000000}""")
+                request.url.encodedPath == "/api/token" -> jsonResponse(
+                    """{"clientId":"client-id","accessToken":"access-token","accessTokenExpirationTimestampMs":$accessExpiresAt,"isAnonymous":$isAnonymous}"""
+                )
+                request.url.host == "clienttoken.spotify.com" -> jsonResponse(
+                    """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":3600,"refresh_after_seconds":1800}}"""
+                )
+                request.url.host == "spclient.wg.spotify.com" -> {
+                    val status = if (lyricsStatuses.size > 1) lyricsStatuses.removeAt(0) else lyricsStatuses.first()
+                    respond(
+                        content = if (status == HttpStatusCode.OK) lyricsBody else "{}",
+                        status = status,
+                        headers = if (status == HttpStatusCode.BadRequest) {
+                            headersOf(
+                                HttpHeaders.ContentType to listOf("application/json"),
+                                "client-token-error" to listOf("INVALID_CLIENTTOKEN"),
+                            )
+                        } else headersOf(HttpHeaders.ContentType, "application/json")
+                    )
+                }
+                else -> error("Unexpected request: ${request.url}")
+            }
+        }
+        val client = HttpClient(engine) {
+            install(ContentNegotiation) { json(Ktor.json) }
+        }
+        val store = FakeSpotifyCredentialStore(initialCookie)
+        return Fixture(SpotifyAPI(store, client, clock), store, requests)
+    }
+
+    private fun MockRequestHandleScope.jsonResponse(content: String) = respond(
+        content = content,
+        status = HttpStatusCode.OK,
+        headers = headersOf(HttpHeaders.ContentType, "application/json")
+    )
+
+    private suspend inline fun <reified T : Throwable> expectFailure(
+        crossinline block: suspend () -> Unit,
+    ): T {
+        try {
+            block()
+        } catch (error: Throwable) {
+            if (error is T) return error
+            throw AssertionError("Expected ${T::class.java.simpleName}, got ${error::class.java.simpleName}", error)
+        }
+        throw AssertionError("Expected ${T::class.java.simpleName}")
+    }
+}
+
+private data class Fixture(
+    val api: SpotifyAPI,
+    val store: FakeSpotifyCredentialStore,
+    val requests: List<HttpRequestData>,
+)
+
+private class FakeSpotifyCredentialStore(initialValue: String?) : SpotifyCredentialStore {
+    private var value = initialValue
+    override fun read(): String? = value
+    override fun save(value: String) { this.value = value }
+    override fun clear() { value = null }
+}

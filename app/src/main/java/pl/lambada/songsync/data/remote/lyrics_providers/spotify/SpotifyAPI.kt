@@ -1,214 +1,376 @@
 package pl.lambada.songsync.data.remote.lyrics_providers.spotify
 
-import android.util.Log
 import dev.turingcomplete.kotlinonetimepassword.HmacAlgorithm
 import dev.turingcomplete.kotlinonetimepassword.TimeBasedOneTimePasswordConfig
 import dev.turingcomplete.kotlinonetimepassword.TimeBasedOneTimePasswordGenerator
+import io.ktor.client.HttpClient
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
-import io.ktor.client.statement.request
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
+import io.ktor.util.decodeBase64Bytes
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.ServerTimeResponse
+import pl.lambada.songsync.domain.model.lyrics_providers.spotify.SpotifyClientTokenResponse
+import pl.lambada.songsync.domain.model.lyrics_providers.spotify.SpotifyLyricsResponse
+import pl.lambada.songsync.domain.model.lyrics_providers.spotify.SpotifyWebPlayerConfig
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.TrackSearchResult
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.WebPlayerTokenResponse
 import pl.lambada.songsync.util.EmptyQueryException
 import pl.lambada.songsync.util.NoTrackFoundException
-import pl.lambada.songsync.util.networking.Ktor.client
-import pl.lambada.songsync.util.networking.Ktor.json
-import java.io.FileNotFoundException
+import pl.lambada.songsync.util.SpotifyAuthenticationRequiredException
+import pl.lambada.songsync.util.SpotifyLyricsNotFoundException
+import pl.lambada.songsync.util.SpotifyRateLimitException
+import pl.lambada.songsync.util.SpotifyServiceException
+import pl.lambada.songsync.util.SpotifySessionExpiredException
+import pl.lambada.songsync.util.networking.Ktor
 import java.net.URLEncoder
-import java.net.UnknownHostException
 import java.nio.charset.StandardCharsets
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 @Serializable
-data class SecretData(
-    val secret: List<Int>,
-    val version: Int
-)
+data class SecretData(val secret: List<Int>, val version: Int)
 
-class SpotifyAPI {
-    private val webPlayerURL = "https://open.spotify.com/"
-    private val baseURL = "https://api-partner.spotify.com/pathfinder/v1/query"
-
-    // TOTP variables
-    private var totpSecret: ByteArray? = null
-    private var totpVer: Int = 0
-    private var totpGenerator: TimeBasedOneTimePasswordGenerator? = null
-
-    // Request headers
-    private val reqHeaders = mapOf(
-        "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-        "Origin" to "https://open.spotify.com",
-        "Referer" to "https://open.spotify.com/",
+/** A single authenticated, in-memory Spotify web-player session. */
+class SpotifyAPI(
+    private val credentialStore: SpotifyCredentialStore,
+    private val client: HttpClient = Ktor.client,
+    private val clock: () -> Long = System::currentTimeMillis,
+) {
+    private val webPlayerUrl = "https://open.spotify.com/"
+    private val searchUrl = "https://api-partner.spotify.com/pathfinder/v1/query"
+    private val requestHeaders = mapOf(
+        HttpHeaders.UserAgent to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+        HttpHeaders.Origin to "https://open.spotify.com",
+        HttpHeaders.Referrer to "https://open.spotify.com/",
+        HttpHeaders.Accept to "application/json",
+        HttpHeaders.AcceptLanguage to "en",
+        "App-Platform" to "WebPlayer",
     )
 
-    // Token data
-    private var spotifyToken = ""
-    private var tokenTime: Long = 0
+    private var totpGenerator: TimeBasedOneTimePasswordGenerator? = null
+    private var totpVersion = 0
+    private var accessToken: String? = null
+    private var accessTokenExpiresAt = 0L
+    private var clientToken: String? = null
+    private var clientTokenRefreshAt = 0L
+    private var clientId: String? = null
+    private var clientVersion: String? = null
+    private var deviceId: String? = null
 
-    /**
-     * Fetches secret data from GitHub and initializes TOTP
-     */
-    private suspend fun initializeTOTP() {
-        if (totpGenerator != null) return
+    fun hasCookie(): Boolean = !credentialStore.read().isNullOrBlank()
 
-        try {
-            val response = client.get("https://raw.githubusercontent.com/xyloflake/spot-secrets-go/refs/heads/main/secrets/secretBytes.json")
-            val responseBody = response.bodyAsText(Charsets.UTF_8)
-            val secretDataList = json.decodeFromString<List<SecretData>>(responseBody)
-            
-            val lastSecretData = secretDataList.last()
-            
-            totpSecret = toSecret(lastSecretData.secret)
-            totpVer = lastSecretData.version
-            
-            totpGenerator = TimeBasedOneTimePasswordGenerator(
-                totpSecret!!,
-                TimeBasedOneTimePasswordConfig(
-                    30L,
-                    TimeUnit.SECONDS,
-                    6,
-                    HmacAlgorithm.SHA1
-                )
-            )
-            
-            Log.d("SpotifyAPI", "TOTP initialized with version: $totpVer")
-        } catch (e: Exception) {
-            Log.e("SpotifyAPI", "Failed to initialize TOTP", e)
-            throw e
-        }
+    suspend fun verifyAndSaveCookie(input: String) {
+        val cookie = normalizeCookie(input)
+        invalidateSession()
+        createAccessSession(cookie)
+        credentialStore.save(cookie)
     }
 
-    /**
-     * Converts secret data to ByteArray
-     */
-    private fun toSecret(data: List<Int>): ByteArray {
-        val mappedData = data.mapIndexed { index, value -> 
-            value xor ((index % 33) + 9)
-        }
-        
-        val dataString = mappedData.joinToString("")
-        val hexData = dataString.toByteArray(StandardCharsets.UTF_8)
-            .joinToString("") { "%02x".format(it) }
-        
-        return hexData.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+    fun clearCookie() {
+        credentialStore.clear()
+        invalidateSession()
     }
 
-    /**
-     * Gets the server time from the Spotify API.
-     * @return The server time in milliseconds.
-     */
-    private suspend fun getServerTime(): Long {
-        val response = client.get(
-            webPlayerURL + "api/server-time"
+    suspend fun ensureAuthenticated() {
+        val cookie = storedCookie()
+        ensureAccessSession(cookie)
+    }
+
+    suspend fun getSyncedLyrics(trackId: String): String {
+        var response = lyricsRequest(trackId)
+        if ((response.status == HttpStatusCode.BadRequest &&
+                response.headers["client-token-error"] == "INVALID_CLIENTTOKEN") ||
+            response.status == HttpStatusCode.Unauthorized ||
+            response.status == HttpStatusCode.Forbidden
         ) {
-            reqHeaders.forEach { (key, value) -> header(key, value) }
+            invalidateSession()
+            response = lyricsRequest(trackId)
         }
-        val body = response.bodyAsText(Charsets.UTF_8)
-        return json.decodeFromString<ServerTimeResponse>(body).serverTime * 1000
-    }
-
-    /**
-     * Generates a TOTP code using the server time.
-     * @return A Pair containing the timestamp and the TOTP code.
-     */
-    private suspend fun getTsAndTOTP(): Pair<Long, String> {
-        if (totpGenerator == null) {
-            initializeTOTP()
-        }
-        
-        val serverTime = getServerTime()
-        return Pair(serverTime, totpGenerator!!.generate(serverTime))
-    }
-
-    /**
-     * Refreshes the access token by sending a request to the Spotify API.
-     * @param force If true, forces a token refresh even if the current token is still valid.
-     */
-    suspend fun refreshToken(force: Boolean = false) {
-        if (force || spotifyToken == "") {
-            val totp = getTsAndTOTP()
-            val response = client.get(
-                webPlayerURL + "api/token"
-            ) {
-                reqHeaders.forEach { (key, value) -> header(key, value) }
-                parameter("reason", "init")
-                parameter("productType", "mobile-web-player")
-                parameter("ts", totp.first)
-                parameter("totp", totp.second)
-                parameter("totpVer", totpVer)
-            }
-            val responseBody = response.bodyAsText(Charsets.UTF_8)
-            val json = json.decodeFromString<WebPlayerTokenResponse>(responseBody)
-
-            this.spotifyToken = json.accessToken
-            this.tokenTime = System.currentTimeMillis()
+        return when (response.status) {
+            HttpStatusCode.OK -> formatSpotifyLyrics(decodeOrServiceFailure(response))
+            HttpStatusCode.NotFound -> throw SpotifyLyricsNotFoundException()
+            HttpStatusCode.TooManyRequests -> throw SpotifyRateLimitException()
+            HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden -> throw SpotifySessionExpiredException()
+            else -> throw SpotifyServiceException()
         }
     }
 
-    /**
-     * Gets song information from the Spotify API.
-     * @param query The SongInfo object with songName and artistName fields filled.
-     * @param offset (optional) The offset used for trying to find a better match or searching again.
-     * @return The SongInfo object containing the song information.
-     */
-    @Throws(UnknownHostException::class, FileNotFoundException::class, NoTrackFoundException::class)
     suspend fun getSongInfo(query: SongInfo, offset: Int? = 0): SongInfo {
-        if (System.currentTimeMillis() - tokenTime > 1800000) // 30 minutes
-            refreshToken()
-
         val searchTerm = withContext(Dispatchers.IO) {
-            URLEncoder.encode(
-                "${query.songName} ${query.artistName}",
-                StandardCharsets.UTF_8.toString()
-            )
+            URLEncoder.encode("${query.songName.orEmpty()} ${query.artistName.orEmpty()}", StandardCharsets.UTF_8.toString())
         }
-
-        if (searchTerm == "+")
-            throw EmptyQueryException()
-
+        if (searchTerm == "+") throw EmptyQueryException()
         val variables = """{"searchTerm":"$searchTerm","offset":$offset,"limit":1,"numberOfTopResults":20,"includeAudiobooks":false}"""
         val extensions = """{"persistedQuery":{"version":1,"sha256Hash":"1d021289df50166c61630e02f002ec91182b518e56bcd681ac6b0640390c0245"}}"""
-
-        val encodedVariables = withContext(Dispatchers.IO) {
-            URLEncoder.encode(variables, StandardCharsets.UTF_8.toString())
-        }
-        val encodedExtensions = withContext(Dispatchers.IO) {
-            URLEncoder.encode(extensions, StandardCharsets.UTF_8.toString())
-        }
-
-        val response = client.get(
-           "$baseURL?operationName=searchTracks&variables=$encodedVariables&extensions=$encodedExtensions"
+        var activeSession = session()
+        var response = searchRequest(activeSession, variables, extensions)
+        if ((response.status == HttpStatusCode.BadRequest &&
+                response.headers["client-token-error"] == "INVALID_CLIENTTOKEN") ||
+            response.status == HttpStatusCode.Unauthorized ||
+            response.status == HttpStatusCode.Forbidden
         ) {
-           headers.append("Authorization", "Bearer $spotifyToken")
+            invalidateSession()
+            activeSession = session()
+            response = searchRequest(activeSession, variables, extensions)
         }
-        val responseBody = response.bodyAsText(Charsets.UTF_8)
-
-        val json = json.decodeFromString<TrackSearchResult>(responseBody)
-        if (json.data.searchV2.tracksV2.items.isEmpty())
-           throw NoTrackFoundException()
-
-        val trackItem = json.data.searchV2.tracksV2.items[0]
-        val track = trackItem.item.data
-
-        val artists = track.artists.items.joinToString(", ") { it.profile.name }
-
-        val albumArtURL = track.albumOfTrack.coverArt.sources[0].url
-
-        val spotifyURL = "https://open.spotify.com/track/${track.id}"
-
+        if (response.status == HttpStatusCode.TooManyRequests) throw SpotifyRateLimitException()
+        if (response.status == HttpStatusCode.Unauthorized || response.status == HttpStatusCode.Forbidden) {
+            invalidateSession()
+            throw SpotifySessionExpiredException()
+        }
+        if (response.status != HttpStatusCode.OK) throw SpotifyServiceException()
+        val result: TrackSearchResult = decodeOrServiceFailure(response)
+        val track = result.data.searchV2.tracksV2.items.firstOrNull()?.item?.data ?: throw NoTrackFoundException()
         return SongInfo(
-           track.name,
-           artists,
-           spotifyURL,
-           albumArtURL
+            songName = track.name,
+            artistName = track.artists.items.joinToString(", ") { it.profile.name },
+            songLink = "https://open.spotify.com/track/${track.id}",
+            albumCoverLink = track.albumOfTrack.coverArt.sources.firstOrNull()?.url,
+            spotifyID = track.id,
+        )
+    }
+
+    private suspend fun searchRequest(
+        activeSession: Session,
+        variables: String,
+        extensions: String,
+    ): HttpResponse = client.get(searchUrl) {
+            parameter("operationName", "searchTracks")
+            parameter("variables", variables)
+            parameter("extensions", extensions)
+            header(HttpHeaders.Authorization, "Bearer ${activeSession.accessToken}")
+            header("Client-Token", activeSession.clientToken)
+            header("Spotify-App-Version", activeSession.clientVersion)
+            commonHeaders()
+        }
+
+    private suspend fun lyricsRequest(trackId: String): HttpResponse {
+        val activeSession = session()
+        return client.get("https://spclient.wg.spotify.com/color-lyrics/v2/track/$trackId") {
+            parameter("format", "json")
+            parameter("vocalRemoval", "false")
+            parameter("market", "from_token")
+            header(HttpHeaders.Authorization, "Bearer ${activeSession.accessToken}")
+            header("Client-Token", activeSession.clientToken)
+            header("Spotify-App-Version", activeSession.clientVersion)
+            commonHeaders()
+        }
+    }
+
+    private suspend fun session(): Session {
+        val cookie = storedCookie()
+        ensureAccessSession(cookie)
+        if (clientToken == null || clock() >= clientTokenRefreshAt) createClientToken()
+        return Session(accessToken!!, clientToken!!, clientVersion!!)
+    }
+
+    private fun storedCookie(): String = credentialStore.read()?.takeIf { it.isNotBlank() }
+        ?: throw SpotifyAuthenticationRequiredException()
+
+    private suspend fun ensureAccessSession(cookie: String) {
+        if (accessToken == null || clock() >= accessTokenExpiresAt ||
+            clientId == null || clientVersion == null || deviceId == null
+        ) createAccessSession(cookie)
+    }
+
+    private suspend fun createAccessSession(cookie: String) {
+        val bootstrap = client.get(webPlayerUrl) { commonHeaders() }
+        if (bootstrap.status == HttpStatusCode.TooManyRequests) throw SpotifyRateLimitException()
+        if (bootstrap.status != HttpStatusCode.OK) throw SpotifyServiceException()
+        val html = bootstrap.bodyAsText()
+        val encodedConfig = Regex("id=[\\\"']appServerConfig[\\\"'][^>]*>([^<]+)")
+            .find(html)?.groupValues?.get(1) ?: throw SpotifyServiceException()
+        val configJson = try {
+            encodedConfig.trim().decodeBase64Bytes().toString(Charsets.UTF_8)
+        } catch (_: Exception) {
+            throw SpotifyServiceException()
+        }
+        val config = try {
+            Ktor.json.decodeFromString<SpotifyWebPlayerConfig>(configJson)
+        } catch (_: Exception) {
+            throw SpotifyServiceException()
+        }
+        val spotifyDevice = bootstrap.headers.getAll(HttpHeaders.SetCookie)
+            ?.asSequence()
+            ?.mapNotNull { Regex("(?:^|;\\s*)sp_t=([^;]+)").find(it)?.groupValues?.get(1) }
+            ?.firstOrNull()
+            ?: UUID.randomUUID().toString().replace("-", "")
+
+        val (timestamp, totp) = getTimestampAndTotp()
+        val tokenResponse = client.get(webPlayerUrl + "api/token") {
+            commonHeaders()
+            header(HttpHeaders.Cookie, "sp_dc=$cookie; sp_t=$spotifyDevice")
+            parameter("reason", "init")
+            parameter("productType", "web-player")
+            parameter("totp", totp)
+            parameter("totpServer", totp)
+            parameter("totpVer", totpVersion)
+            parameter("ts", timestamp)
+        }
+        if (tokenResponse.status == HttpStatusCode.Unauthorized || tokenResponse.status == HttpStatusCode.Forbidden) {
+            throw SpotifySessionExpiredException()
+        }
+        if (tokenResponse.status == HttpStatusCode.TooManyRequests) throw SpotifyRateLimitException()
+        if (tokenResponse.status != HttpStatusCode.OK) throw SpotifyServiceException()
+        val webToken = try {
+            Ktor.json.decodeFromString<WebPlayerTokenResponse>(tokenResponse.bodyAsText())
+        } catch (_: Exception) {
+            throw SpotifySessionExpiredException()
+        }
+        if (webToken.isAnonymous) throw SpotifySessionExpiredException()
+
+        accessToken = webToken.accessToken
+        accessTokenExpiresAt = webToken.accessTokenExpirationTimestampMs - 30_000
+        clientId = webToken.clientId
+        clientVersion = config.clientVersion
+        deviceId = spotifyDevice
+        clientToken = null
+        clientTokenRefreshAt = 0
+    }
+
+    private suspend fun createClientToken() {
+        val tokenResponseForClient = client.post("https://clienttoken.spotify.com/v1/clienttoken") {
+            commonHeaders()
+            contentType(ContentType.Application.Json)
+            setBody(buildJsonObject {
+                put("client_data", buildJsonObject {
+                    put("client_version", clientVersion!!)
+                    put("client_id", clientId!!)
+                    put("js_sdk_data", buildJsonObject {
+                        put("device_brand", "unknown")
+                        put("device_model", "unknown")
+                        put("os", "windows")
+                        put("os_version", "NT 10.0")
+                        put("device_id", deviceId!!)
+                        put("device_type", "computer")
+                    })
+                })
+            }.toString())
+        }
+        if (tokenResponseForClient.status == HttpStatusCode.TooManyRequests) throw SpotifyRateLimitException()
+        if (tokenResponseForClient.status == HttpStatusCode.Unauthorized ||
+            tokenResponseForClient.status == HttpStatusCode.Forbidden
+        ) throw SpotifySessionExpiredException()
+        if (tokenResponseForClient.status != HttpStatusCode.OK) throw SpotifyServiceException()
+        val clientTokenPayload = decodeOrServiceFailure<SpotifyClientTokenResponse>(tokenResponseForClient)
+        if (clientTokenPayload.responseType != "RESPONSE_GRANTED_TOKEN_RESPONSE") throw SpotifyServiceException()
+        val granted = clientTokenPayload.grantedToken ?: throw SpotifyServiceException()
+
+        clientToken = granted.token
+        clientTokenRefreshAt = clock() + granted.refreshAfterSeconds.coerceAtLeast(30) * 1_000
+    }
+
+    private suspend fun getTimestampAndTotp(): Pair<Long, String> {
+        if (totpGenerator == null) {
+            val latest = loadLatestSecret()
+            val secret = latest.secret.mapIndexed { index, value -> value xor ((index % 33) + 9) }
+                .joinToString("")
+                .toByteArray(StandardCharsets.UTF_8)
+                .joinToString("") { "%02x".format(it) }
+                .chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+            totpVersion = latest.version
+            totpGenerator = TimeBasedOneTimePasswordGenerator(
+                secret,
+                TimeBasedOneTimePasswordConfig(30L, TimeUnit.SECONDS, 6, HmacAlgorithm.SHA1)
+            )
+        }
+        val response = client.get(webPlayerUrl + "api/server-time") { commonHeaders() }
+        if (response.status == HttpStatusCode.TooManyRequests) throw SpotifyRateLimitException()
+        if (response.status != HttpStatusCode.OK) throw SpotifyServiceException()
+        val serverTime = decodeOrServiceFailure<ServerTimeResponse>(response).serverTime * 1_000
+        return serverTime to totpGenerator!!.generate(serverTime)
+    }
+
+    private suspend fun loadLatestSecret(): SecretData {
+        try {
+            val response = client.get(PRIMARY_SECRET_URL)
+            if (response.status == HttpStatusCode.OK) {
+                Ktor.json.decodeFromString<List<SecretData>>(response.bodyAsText())
+                    .maxByOrNull { it.version }
+                    ?.let { return it }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // Try the independent mirror below.
+        }
+
+        try {
+            val response = client.get(MIRROR_SECRET_URL)
+            if (response.status == HttpStatusCode.OK) {
+                val secrets = Ktor.json.decodeFromString<Map<String, List<Int>>>(response.bodyAsText())
+                secrets.maxByOrNull { it.key.toIntOrNull() ?: -1 }?.let { (version, secret) ->
+                    return SecretData(secret = secret, version = version.toInt())
+                }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            // The bundled value keeps verification working during a temporary source outage.
+        }
+
+        return BUNDLED_SECRET
+    }
+
+    private fun normalizeCookie(input: String): String {
+        val trimmed = input.trim()
+        if ('\n' in trimmed || '\r' in trimmed) throw SpotifySessionExpiredException()
+        val value = if (trimmed.startsWith("sp_dc=", ignoreCase = true)) {
+            trimmed.substringAfter('=').substringBefore(';').trim()
+        } else trimmed
+        if (value.isBlank() || value.any { it.isWhitespace() }) throw SpotifySessionExpiredException()
+        return value
+    }
+
+    private fun invalidateSession() {
+        accessToken = null
+        accessTokenExpiresAt = 0
+        clientToken = null
+        clientTokenRefreshAt = 0
+        clientId = null
+        clientVersion = null
+        deviceId = null
+    }
+
+    private fun HttpRequestBuilder.commonHeaders() {
+        requestHeaders.forEach { (key, value) -> header(key, value) }
+    }
+
+    private suspend inline fun <reified T> decodeOrServiceFailure(response: HttpResponse): T = try {
+        Ktor.json.decodeFromString(response.bodyAsText())
+    } catch (_: Exception) {
+        throw SpotifyServiceException()
+    }
+
+    private data class Session(val accessToken: String, val clientToken: String, val clientVersion: String)
+
+    private companion object {
+        const val PRIMARY_SECRET_URL =
+            "https://raw.githubusercontent.com/xyloflake/spot-secrets-go/refs/heads/main/secrets/secretBytes.json"
+        const val MIRROR_SECRET_URL =
+            "https://code.thetadev.de/ThetaDev/spotify-secrets/raw/branch/main/secrets/secretDict.json"
+        val BUNDLED_SECRET = SecretData(
+            version = 61,
+            secret = listOf(
+                44, 55, 47, 42, 70, 40, 34, 114, 76, 74, 50, 111, 120,
+                97, 75, 76, 94, 102, 43, 69, 49, 120, 118, 80, 64, 78,
+            ),
         )
     }
 }

@@ -21,16 +21,21 @@ import pl.lambada.songsync.activities.quicksearch.viewmodel.QuickLyricsSearchVie
 import pl.lambada.songsync.activities.quicksearch.viewmodel.QuickLyricsSearchViewModelFactory
 import pl.lambada.songsync.data.UserSettingsController
 import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
+import pl.lambada.songsync.data.remote.lyrics_providers.spotify.AndroidSpotifyCredentialStore
+import pl.lambada.songsync.data.remote.lyrics_providers.spotify.SpotifyAPI
 import pl.lambada.songsync.ui.theme.SongSyncTheme
 import pl.lambada.songsync.util.dataStore
 
 class QuickLyricsSearchActivity : AppCompatActivity() {
-    private val lyricsProviderService = LyricsProviderService()
+    private lateinit var lyricsProviderService: LyricsProviderService
 
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lyricsProviderService = LyricsProviderService(
+            SpotifyAPI(AndroidSpotifyCredentialStore(applicationContext))
+        )
 
         val userSettingsController = UserSettingsController(dataStore)
         val viewModel: QuickLyricsSearchViewModel by viewModels {

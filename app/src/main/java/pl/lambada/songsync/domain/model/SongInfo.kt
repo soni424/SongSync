@@ -16,6 +16,7 @@ import kotlinx.parcelize.Parcelize
  * @param neteaseID The ID for Netease.
  * @param appleID The ID for Apple Music.
  * @param musixmatchID The ID for Musixmatch.
+ * @param spotifyID The Spotify track ID.
  * @param hasSyncedLyrics Flag indicating if the song has synced lyrics (Musixmatch-only).
  * @param hasUnsyncedLyrics Flag indicating if the song has unsynced lyrics (Musixmatch-only).
  * @param syncedLyrics The synced lyrics (Musixmatch-only).
@@ -33,6 +34,7 @@ data class SongInfo(
     var neteaseID: Long? = null, // Netease-only
     var appleID: Long? = null, // Apple-only
     var musixmatchID: Long? = null, // Musixmatch-only
+    var spotifyID: String? = null, // Spotify-only
     var hasSyncedLyrics: Boolean? = null, // Musixmatch-only
     var hasUnsyncedLyrics: Boolean? = null, // Musixmatch-only
     var syncedLyrics: String? = null, // Musixmatch-only

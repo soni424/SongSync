@@ -26,6 +26,12 @@ import pl.lambada.songsync.ui.components.SongCard
 import pl.lambada.songsync.ui.screens.lyricsFetch.LyricsFetchState
 import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.util.applyOffsetToLyrics
+import pl.lambada.songsync.util.SpotifyAuthenticationRequiredException
+import pl.lambada.songsync.util.SpotifyLyricsNotFoundException
+import pl.lambada.songsync.util.SpotifyRateLimitException
+import pl.lambada.songsync.util.SpotifyServiceException
+import pl.lambada.songsync.util.SpotifySessionExpiredException
+import pl.lambada.songsync.util.SpotifyUnsyncedLyricsException
 
 
 @OptIn(ExperimentalSharedTransitionApi::class)
@@ -48,6 +54,7 @@ fun SharedTransitionScope.SuccessContent(
     allowTryingAgain: Boolean,
     selectedProvider: Providers,
     onExpandProvidersRequest: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) = Column(horizontalAlignment = Alignment.CenterHorizontally) {
     Spacer(modifier = Modifier.height(10.dp))
     CloudProviderTitle(
@@ -116,7 +123,27 @@ fun SharedTransitionScope.SuccessContent(
                     originalLanguage = result.originalLanguage,
                 )
 
-                is LyricsFetchState.Failed -> Text(stringResource(R.string.this_track_has_no_lyrics))
+                is LyricsFetchState.Failed -> {
+                    val message = when (it.exception) {
+                        is SpotifyAuthenticationRequiredException -> R.string.spotify_auth_required
+                        is SpotifySessionExpiredException -> R.string.spotify_session_expired
+                        is SpotifyLyricsNotFoundException -> R.string.this_track_has_no_lyrics
+                        is SpotifyUnsyncedLyricsException -> R.string.spotify_unsynchronized
+                        is SpotifyRateLimitException -> R.string.spotify_rate_limited
+                        is SpotifyServiceException -> R.string.spotify_provider_unavailable
+                        else -> R.string.this_track_has_no_lyrics
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(stringResource(message))
+                        if (it.exception is SpotifyAuthenticationRequiredException ||
+                            it.exception is SpotifySessionExpiredException
+                        ) {
+                            OutlinedButton(onClick = onOpenSettings) {
+                                Text(stringResource(R.string.open_settings))
+                            }
+                        }
+                    }
+                }
 
                 LyricsFetchState.Pending -> CircularProgressIndicator()
             }

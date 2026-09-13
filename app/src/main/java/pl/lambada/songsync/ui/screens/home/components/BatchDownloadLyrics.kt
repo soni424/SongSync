@@ -10,6 +10,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
+import pl.lambada.songsync.R
 import pl.lambada.songsync.ui.screens.home.HomeViewModel
 import pl.lambada.songsync.ui.screens.home.components.batchDownload.BatchDownloadWarningDialog
 import pl.lambada.songsync.ui.screens.home.components.batchDownload.DownloadCompleteDialog
@@ -20,7 +25,7 @@ import kotlin.math.roundToInt
 
 @SuppressLint("StringFormatMatches")
 @Composable
-fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit) {
+fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit, onOpenSettings: () -> Unit) {
     val songs = viewModel.songsToBatchDownload
     var uiState by rememberSaveable { mutableStateOf(UiState.Warning) }
     var successCount by rememberSaveable { mutableIntStateOf(0) }
@@ -39,7 +44,9 @@ fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit) {
                     failedCount = newFailedCount
                 },
                 onDownloadComplete = { uiState = UiState.Done },
-                onRateLimitReached = { uiState = UiState.RateLimited }
+                onRateLimitReached = { uiState = UiState.RateLimited },
+                onAuthenticationRequired = { uiState = UiState.AuthenticationRequired },
+                onProviderUnavailable = { uiState = UiState.ProviderUnavailable },
             )
         }
     }
@@ -94,9 +101,25 @@ fun BatchDownloadLyrics(viewModel: HomeViewModel, onDone: () -> Unit) {
         )
 
         UiState.RateLimited -> RateLimitedDialog(onDismiss = { uiState = UiState.Cancelled })
+        UiState.AuthenticationRequired -> AlertDialog(
+            onDismissRequest = { uiState = UiState.Cancelled },
+            title = { Text(stringResource(R.string.spotify_lyrics)) },
+            text = { Text(stringResource(R.string.spotify_auth_required)) },
+            confirmButton = {
+                Button(onClick = onOpenSettings) { Text(stringResource(R.string.open_settings)) }
+            },
+        )
+        UiState.ProviderUnavailable -> AlertDialog(
+            onDismissRequest = { uiState = UiState.Cancelled },
+            title = { Text(stringResource(R.string.spotify_lyrics)) },
+            text = { Text(stringResource(R.string.spotify_provider_unavailable)) },
+            confirmButton = {
+                Button(onClick = { uiState = UiState.Cancelled }) { Text(stringResource(R.string.ok)) }
+            },
+        )
     }
 }
 
 enum class UiState {
-    Warning, LegacyPrompt, Pending, Done, RateLimited, Cancelled
+    Warning, LegacyPrompt, Pending, Done, RateLimited, AuthenticationRequired, ProviderUnavailable, Cancelled
 }

@@ -7,24 +7,23 @@ import pl.lambada.songsync.data.remote.lyrics_providers.others.MusixmatchAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.others.NeteaseAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.others.QQMusicAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.spotify.SpotifyAPI
-import pl.lambada.songsync.data.remote.lyrics_providers.spotify.SpotifyLyricsAPI
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.util.EmptyQueryException
 import pl.lambada.songsync.util.InternalErrorException
 import pl.lambada.songsync.util.NoTrackFoundException
 import pl.lambada.songsync.util.Providers
+import pl.lambada.songsync.util.SpotifyProviderException
+import pl.lambada.songsync.util.SpotifyServiceException
 import java.io.FileNotFoundException
 import java.net.UnknownHostException
 
 /**
  * Service class for interacting with different lyrics providers.
  */
-class LyricsProviderService {
-    // Spotify API token
-    private val spotifyAPI = SpotifyAPI()
-
-    // Spotify Track Url
-    private var spotifyUrl = ""
+class LyricsProviderService(
+    private val spotifyAPI: SpotifyAPI,
+) {
+    private var spotifyTrackID = ""
 
     // LRCLib Track ID
     private var lrcLibID = 0
@@ -45,11 +44,15 @@ class LyricsProviderService {
     private var musixmatchSongInfo: SongInfo? = null
     // TODO: Use values from SongInfo object returned by search instead of storing them here
 
-    /**
-     * Refreshes the access token by sending a request to the Spotify API.
-     */
-    suspend fun refreshSpotifyToken() = kotlin.runCatching {
-        spotifyAPI.refreshToken()
+    fun hasSpotifyCookie(): Boolean = spotifyAPI.hasCookie()
+    suspend fun verifyAndSaveSpotifyCookie(value: String) = spotifyAPI.verifyAndSaveCookie(value)
+    fun clearSpotifyCookie() = spotifyAPI.clearCookie()
+    suspend fun preflightSpotifyAuthentication() = try {
+        spotifyAPI.ensureAuthenticated()
+    } catch (error: SpotifyProviderException) {
+        throw error
+    } catch (_: Exception) {
+        throw SpotifyServiceException()
     }
 
     /**
@@ -69,8 +72,8 @@ class LyricsProviderService {
         return try {
             when (provider) {
                 Providers.SPOTIFY -> spotifyAPI.getSongInfo(query, offset).also {
-                    spotifyUrl = it?.songLink ?: ""
-                } ?: throw NoTrackFoundException()
+                    spotifyTrackID = it.spotifyID.orEmpty()
+                }
                 
                 Providers.LRCLIB -> LRCLibAPI().getSongInfo(query, offset).also {
                     lrcLibID = it?.lrcLibID ?: 0
@@ -94,8 +97,15 @@ class LyricsProviderService {
             }
         } catch (e: Exception) {
             when (e) {
-                is InternalErrorException, is NoTrackFoundException, is EmptyQueryException -> throw e
-                else -> throw InternalErrorException(Log.getStackTraceString(e))
+                is InternalErrorException,
+                is NoTrackFoundException,
+                is EmptyQueryException,
+                is SpotifyProviderException -> throw e
+                else -> if (provider == Providers.SPOTIFY) {
+                    throw SpotifyServiceException()
+                } else {
+                    throw InternalErrorException(Log.getStackTraceString(e))
+                }
             }
         }
     }
@@ -116,7 +126,13 @@ class LyricsProviderService {
         unsyncedFallbackMusixmatch: Boolean = true
     ): String? {
         return when (provider) {
-            Providers.SPOTIFY -> SpotifyLyricsAPI().getSyncedLyrics(spotifyUrl)
+            Providers.SPOTIFY -> try {
+                spotifyAPI.getSyncedLyrics(spotifyTrackID)
+            } catch (error: SpotifyProviderException) {
+                throw error
+            } catch (_: Exception) {
+                throw SpotifyServiceException()
+            }
             Providers.LRCLIB -> LRCLibAPI().getSyncedLyrics(lrcLibID)
             Providers.NETEASE -> NeteaseAPI().getSyncedLyrics(
                 neteaseID, includeTranslationNetEase, includeRomanizationNetEase

@@ -34,6 +34,7 @@ import pl.lambada.songsync.ui.screens.settings.components.SdCardPathSetting
 import pl.lambada.songsync.ui.screens.settings.components.ShowPathSwitch
 import pl.lambada.songsync.ui.screens.settings.components.SupportSection
 import pl.lambada.songsync.ui.screens.settings.components.SyncedLyricsSwitch
+import pl.lambada.songsync.ui.screens.settings.components.SpotifyCredentialsSection
 import pl.lambada.songsync.ui.screens.settings.components.TranslationSection
 import pl.lambada.songsync.ui.screens.settings.components.TranslationSwitch
 import pl.lambada.songsync.ui.screens.settings.components.UpdateAvailableDialog
@@ -88,6 +89,15 @@ fun SettingsScreen(
             }
 
             item { SettingsHeadLabel(label = stringResource(id = R.string.provider)) }
+            item { SettingsHeadLabel(label = stringResource(id = R.string.spotify_lyrics)) }
+            item {
+                SpotifyCredentialsSection(
+                    state = viewModel.spotifyState,
+                    error = viewModel.spotifyError,
+                    onSave = viewModel::verifyAndSaveSpotifyCookie,
+                    onClear = viewModel::clearSpotifyCookie,
+                )
+            }
             item {
                 TranslationSwitch(
                     selected = userSettingsController.includeTranslation,

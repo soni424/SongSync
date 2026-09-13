@@ -12,11 +12,12 @@ android {
 
     defaultConfig {
         applicationId = "pl.lambada.songsync"
-        minSdk = 21
+        minSdk = 23
         //noinspection OldTargetApi
         targetSdk = 35
         versionCode = 433
         versionName = "4.3.3"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -36,6 +37,9 @@ android {
         }
     }
     buildTypes {
+        debug {
+            applicationIdSuffix = ".personal"
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(
@@ -97,4 +101,10 @@ dependencies {
     implementation("io.ktor:ktor-client-cio:2.3.4")
     implementation("io.ktor:ktor-client-content-negotiation:2.3.4")
     implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.4")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("io.ktor:ktor-client-mock:2.3.6")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }

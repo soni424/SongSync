@@ -209,7 +209,7 @@ suspend fun downloadLyrics(
             },
             onSuccessfulSongInfoResponse = { consecutiveNotFound = 0 },
             onFailedLyricsResponse = {
-                if (it is NullPointerException || it is FileNotFoundException)
+                if (it is NullPointerException || it is FileNotFoundException || it is SpotifyLyricsNotFoundException)
                     noLyricsCount++
                 else {
                     failedCount++

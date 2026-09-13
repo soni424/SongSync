@@ -34,6 +34,11 @@ import pl.lambada.songsync.domain.model.SortOrders
 import pl.lambada.songsync.domain.model.SortValues
 import pl.lambada.songsync.services.NotificationListener
 import pl.lambada.songsync.util.downloadLyrics
+import pl.lambada.songsync.util.Providers
+import pl.lambada.songsync.util.SpotifyAuthenticationRequiredException
+import pl.lambada.songsync.util.SpotifySessionExpiredException
+import pl.lambada.songsync.util.SpotifyProviderException
+import pl.lambada.songsync.util.SpotifyRateLimitException
 import pl.lambada.songsync.util.ext.toLrcFile
 import java.io.File
 import java.util.UUID
@@ -292,8 +297,7 @@ class HomeViewModel(
         lyricsProviderService.getSongInfo(query, provider = userSettingsController.selectedProvider)
 
     suspend fun getSyncedLyrics(title: String, artist: String): String? {
-        return try {
-            lyricsProviderService.getSyncedLyrics(
+        return lyricsProviderService.getSyncedLyrics(
                 title,
                 artist,
                 provider = userSettingsController.selectedProvider,
@@ -302,9 +306,6 @@ class HomeViewModel(
                 multiPersonWordByWord = userSettingsController.multiPersonWordByWord,
                 unsyncedFallbackMusixmatch = userSettingsController.unsyncedFallbackMusixmatch
             )
-        } catch (e: Exception) {
-            null
-        }
     }
 
     fun selectSong(song: Song, newValue: Boolean) {
@@ -324,8 +325,27 @@ class HomeViewModel(
         context: Context,
         onProgressUpdate: (successCount: Int, noLyricsCount: Int, failedCount: Int) -> Unit,
         onDownloadComplete: () -> Unit,
-        onRateLimitReached: () -> Unit
+        onRateLimitReached: () -> Unit,
+        onAuthenticationRequired: () -> Unit,
+        onProviderUnavailable: () -> Unit,
     ) = viewModelScope.launch {
+        if (userSettingsController.selectedProvider == Providers.SPOTIFY) {
+            try {
+                lyricsProviderService.preflightSpotifyAuthentication()
+            } catch (_: SpotifyAuthenticationRequiredException) {
+                onAuthenticationRequired()
+                return@launch
+            } catch (_: SpotifySessionExpiredException) {
+                onAuthenticationRequired()
+                return@launch
+            } catch (_: SpotifyRateLimitException) {
+                onRateLimitReached()
+                return@launch
+            } catch (_: SpotifyProviderException) {
+                onProviderUnavailable()
+                return@launch
+            }
+        }
         downloadLyrics(
             songs = songsToBatchDownload,
             viewModel = this@HomeViewModel,
