@@ -22,6 +22,7 @@ enum class SpotifyFailureKind(val code: String) {
     NO_LYRICS("NO-LYRICS"),
     UNSYNCHRONIZED("UNSYNCED"),
     INVALID_CLIENT_TOKEN("INVALID-CLIENT"),
+    CHALLENGE("CHALLENGE"),
     UNEXPECTED("UNEXPECTED"),
 }
 

@@ -8,6 +8,7 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.HttpRequestData
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.content.TextContent
 import io.ktor.http.headersOf
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.test.runTest
@@ -25,6 +26,9 @@ import pl.lambada.songsync.util.SpotifyServiceException
 import pl.lambada.songsync.util.SpotifySessionExpiredException
 import pl.lambada.songsync.util.networking.Ktor
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
 import java.util.Base64
 
 class SpotifyAPITest {
@@ -82,13 +86,14 @@ class SpotifyAPITest {
     }
 
     @Test
-    fun `invalid client token refreshes session once`() = runTest {
+    fun `invalid lyrics session refreshes authenticated access once`() = runTest {
         val fixture = fixture(
             lyricsStatuses = mutableListOf(HttpStatusCode.BadRequest, HttpStatusCode.OK)
         )
 
         assertEquals("[00:01.23]First line", fixture.api.getSyncedLyrics("track-id"))
-        assertEquals(2, fixture.requests.count { it.url.host == "clienttoken.spotify.com" })
+        assertEquals(0, fixture.requests.count { it.url.host == "clienttoken.spotify.com" })
+        assertEquals(2, fixture.requests.count { it.url.encodedPath == "/api/token" })
         assertEquals(2, fixture.requests.count { it.url.host == "spclient.wg.spotify.com" })
     }
 
@@ -259,13 +264,71 @@ class SpotifyAPITest {
     @Test
     fun `client token parser accepts omitted refresh time and string expiry`() = runTest {
         val fixture = fixture(
-            clientTokenBody = """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":"3600"}}""",
+            clientTokenBodies = mutableListOf(
+                """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":"3600"}}"""
+            ),
             searchBody = """{"data":{"searchV2":{"tracksV2":{"items":[{"item":{"data":{"id":"spotify-track","name":"B-Side Blues","albumOfTrack":{"coverArt":{"sources":[]}},"artists":{"items":[{"profile":{"name":"OFFICIAL HIGE DANDISM"}}]}}}}]}}}}""",
         )
 
         val song = fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
 
         assertEquals("spotify-track", song.spotifyID)
+    }
+
+    @Test
+    fun `hash cash client token challenge is solved and exchanged for a token`() = runTest {
+        val fixture = fixture(
+            clientTokenBodies = mutableListOf(
+                """{"response_type":"RESPONSE_CHALLENGES_RESPONSE","challenges":{"state":"challenge-state","challenges":[{"type":"CHALLENGE_HASH_CASH","evaluate_hashcash_parameters":{"length":4,"prefix":"00112233445566778899AABBCCDDEEFF"}}]}}""",
+                GRANTED_CLIENT_TOKEN,
+            ),
+            searchBody = """{"data":{"searchV2":{"tracksV2":{"items":[{"item":{"data":{"id":"spotify-track","name":"B-Side Blues","albumOfTrack":{"coverArt":{"sources":[]}},"artists":{"items":[{"profile":{"name":"OFFICIAL HIGE DANDISM"}}]}}}}]}}}}""",
+        )
+
+        val song = fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
+
+        assertEquals("spotify-track", song.spotifyID)
+        assertEquals(2, fixture.requests.count { it.url.host == "clienttoken.spotify.com" })
+        val answer = fixture.requests
+            .filter { it.url.host == "clienttoken.spotify.com" }
+            .last().body as TextContent
+        assertTrue(answer.text.contains("REQUEST_CHALLENGE_ANSWERS_REQUEST"))
+        assertTrue(answer.text.contains("challenge-state"))
+        assertTrue(answer.text.contains("CHALLENGE_HASH_CASH"))
+        assertFalse(answer.text.contains("private-cookie"))
+        assertFalse(answer.text.contains("access-token"))
+    }
+
+    @Test
+    fun `hash cash solver returns an uppercase suffix satisfying Spotify proof of work`() {
+        val prefixHex = "00112233445566778899AABBCCDDEEFF"
+        val suffixHex = solveSpotifyHashCash(prefixHex, 8)
+        val prefix = prefixHex.hexBytes()
+        val suffix = suffixHex.hexBytes()
+        val digest = MessageDigest.getInstance("SHA-1").digest(prefix + suffix)
+        val proof = ByteBuffer.wrap(digest, 12, Long.SIZE_BYTES)
+            .order(ByteOrder.BIG_ENDIAN)
+            .long
+
+        assertEquals(32, suffixHex.length)
+        assertEquals(suffixHex.uppercase(), suffixHex)
+        assertTrue(java.lang.Long.numberOfTrailingZeros(proof) >= 8)
+    }
+
+    @Test
+    fun `unrecognized client token response falls back to authenticated Spotify search`() = runTest {
+        val fixture = fixture(
+            clientTokenBodies = mutableListOf("""{"unexpected":"safe-shape"}"""),
+            officialSearchBody = """{"tracks":{"items":[{"id":"spotify-track","name":"B-Side Blues","artists":[{"name":"OFFICIAL HIGE DANDISM"}],"album":{"images":[{"url":"https://image.test/cover.jpg"}]}}]}}""",
+        )
+
+        val song = fixture.api.getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
+
+        assertEquals("spotify-track", song.spotifyID)
+        val officialRequest = fixture.requests.single { it.url.host == "api.spotify.com" }
+        assertEquals("track", officialRequest.url.parameters["type"])
+        assertEquals("Bearer access-token", officialRequest.headers[HttpHeaders.Authorization])
+        assertNull(officialRequest.headers["Client-Token"])
     }
 
     @Test
@@ -290,7 +353,8 @@ class SpotifyAPITest {
         searchBody: String = """{"data":{"searchV2":{"tracksV2":{"items":[]}}}}""",
         searchStatus: HttpStatusCode = HttpStatusCode.OK,
         clientTokenStatus: HttpStatusCode = HttpStatusCode.OK,
-        clientTokenBody: String = """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":3600,"refresh_after_seconds":1800}}""",
+        clientTokenBodies: MutableList<String> = mutableListOf(GRANTED_CLIENT_TOKEN),
+        officialSearchBody: String = """{"tracks":{"items":[]}}""",
         bootstrapStatus: HttpStatusCode = HttpStatusCode.OK,
         serverTimeStatus: HttpStatusCode = HttpStatusCode.OK,
         accessStatus: HttpStatusCode = HttpStatusCode.OK,
@@ -328,7 +392,9 @@ class SpotifyAPITest {
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
                 request.url.host == "clienttoken.spotify.com" -> respond(
-                    content = if (clientTokenStatus == HttpStatusCode.OK) clientTokenBody else "{}",
+                    content = if (clientTokenStatus == HttpStatusCode.OK) {
+                        if (clientTokenBodies.size > 1) clientTokenBodies.removeAt(0) else clientTokenBodies.first()
+                    } else "{}",
                     status = clientTokenStatus,
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
@@ -337,6 +403,7 @@ class SpotifyAPITest {
                     status = searchStatus,
                     headers = headersOf(HttpHeaders.ContentType, "application/json"),
                 )
+                request.url.host == "api.spotify.com" -> jsonResponse(officialSearchBody)
                 request.url.host == "spclient.wg.spotify.com" -> {
                     val status = if (lyricsStatuses.size > 1) lyricsStatuses.removeAt(0) else lyricsStatuses.first()
                     respond(
@@ -377,6 +444,14 @@ class SpotifyAPITest {
         }
         throw AssertionError("Expected ${T::class.java.simpleName}")
     }
+
+    private companion object {
+        const val GRANTED_CLIENT_TOKEN =
+            """{"response_type":"RESPONSE_GRANTED_TOKEN_RESPONSE","granted_token":{"token":"client-token","expires_after_seconds":3600,"refresh_after_seconds":1800}}"""
+    }
+
+    private fun String.hexBytes(): ByteArray =
+        chunked(2).map { it.toInt(16).toByte() }.toByteArray()
 }
 
 private data class Fixture(

@@ -18,12 +18,21 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.util.decodeBase64Bytes
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.ServerTimeResponse
-import pl.lambada.songsync.domain.model.lyrics_providers.spotify.SpotifyClientTokenResponse
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.SpotifyLyricsResponse
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.SpotifyWebPlayerConfig
 import pl.lambada.songsync.domain.model.lyrics_providers.spotify.TrackSearchResult
@@ -99,12 +108,12 @@ class SpotifyAPI(
         return try {
             getSongInfo(SongInfo("B-Side Blues", "OFFICIAL HIGE DANDISM"))
             getSyncedLyrics(CONNECTION_TEST_LYRICS_TRACK_ID)
-            SpotifyConnectionTestReport(CONNECTION_TEST_OPERATIONS)
+            SpotifyConnectionTestReport(connectionTestOperations())
         } catch (error: SpotifyProviderException) {
             val passed = if (error is SpotifyAuthenticationRequiredException) {
                 emptyList()
             } else {
-                CONNECTION_TEST_OPERATIONS.takeWhile { it != error.diagnostic.operation }
+                connectionTestOperations().takeWhile { it != error.diagnostic.operation }
             }
             SpotifyConnectionTestReport(passed, error)
         } catch (_: Exception) {
@@ -114,6 +123,11 @@ class SpotifyAPI(
             SpotifyConnectionTestReport(emptyList(), error)
         }
     }
+
+    private fun connectionTestOperations(): List<SpotifyOperation> =
+        CONNECTION_TEST_OPERATIONS.filter {
+            it != SpotifyOperation.CLIENT_TOKEN || clientToken != null
+        }
 
     suspend fun getSyncedLyrics(trackId: String): String {
         var response = lyricsRequest(trackId)
@@ -149,7 +163,16 @@ class SpotifyAPI(
             put("includeAudiobooks", false)
         }.toString()
         val extensions = """{"persistedQuery":{"version":1,"sha256Hash":"1d021289df50166c61630e02f002ec91182b518e56bcd681ac6b0640390c0245"}}"""
-        var activeSession = session()
+        var activeSession = try {
+            session()
+        } catch (error: SpotifyServiceException) {
+            if (error.diagnostic.operation == SpotifyOperation.CLIENT_TOKEN &&
+                error.diagnostic.kind in setOf(SpotifyFailureKind.PARSE, SpotifyFailureKind.CHALLENGE)
+            ) {
+                return officialSearch(searchTerm, offset ?: 0)
+            }
+            throw error
+        }
         var response = searchRequest(activeSession, variables, extensions)
         if ((response.status == HttpStatusCode.BadRequest &&
                 response.headers["client-token-error"] == "INVALID_CLIENTTOKEN") ||
@@ -198,17 +221,70 @@ class SpotifyAPI(
     }
 
     private suspend fun lyricsRequest(trackId: String): HttpResponse {
-        val activeSession = session()
+        val cookie = storedCookie()
+        ensureAccessSession(cookie)
         return spotifyRequest(SpotifyOperation.LYRICS_REQUEST) {
             client.get("https://spclient.wg.spotify.com/color-lyrics/v2/track/$trackId") {
             parameter("format", "json")
             parameter("vocalRemoval", "false")
             parameter("market", "from_token")
-            header(HttpHeaders.Authorization, "Bearer ${activeSession.accessToken}")
-            header("Client-Token", activeSession.clientToken)
-            header("Spotify-App-Version", activeSession.clientVersion)
+            header(HttpHeaders.Authorization, "Bearer $accessToken")
+            clientToken?.let { header("Client-Token", it) }
+            header("Spotify-App-Version", clientVersion!!)
             commonHeaders()
         }
+        }
+    }
+
+    private suspend fun officialSearch(searchTerm: String, offset: Int): SongInfo {
+        val cookie = storedCookie()
+        ensureAccessSession(cookie)
+        val response = spotifyRequest(SpotifyOperation.TRACK_SEARCH) {
+            client.get("https://api.spotify.com/v1/search") {
+                parameter("q", searchTerm)
+                parameter("type", "track")
+                parameter("limit", 1)
+                parameter("offset", offset)
+                header(HttpHeaders.Authorization, "Bearer $accessToken")
+                commonHeaders()
+            }
+        }
+        when (response.status) {
+            HttpStatusCode.TooManyRequests -> throw SpotifyRateLimitException(
+                diagnosticFor(response, SpotifyOperation.TRACK_SEARCH, SpotifyFailureKind.RATE_LIMITED)
+            )
+            HttpStatusCode.Unauthorized, HttpStatusCode.Forbidden -> {
+                invalidateSession()
+                throw SpotifySessionExpiredException(
+                    diagnosticFor(response, SpotifyOperation.TRACK_SEARCH, SpotifyFailureKind.AUTHENTICATION)
+                )
+            }
+            HttpStatusCode.OK -> Unit
+            else -> throw SpotifyServiceException(diagnosticFor(response, SpotifyOperation.TRACK_SEARCH))
+        }
+
+        val track = try {
+            Ktor.json.parseToJsonElement(response.bodyAsText())
+                .jsonObject["tracks"]!!.jsonObject["items"]!!.jsonArray
+                .firstOrNull()?.jsonObject
+        } catch (_: Exception) {
+            throw parseFailure(SpotifyOperation.TRACK_SEARCH)
+        } ?: throw NoTrackFoundException()
+
+        return try {
+            SongInfo(
+                songName = track["name"]!!.jsonPrimitive.content,
+                artistName = track["artists"]!!.jsonArray.joinToString(", ") {
+                    it.jsonObject["name"]!!.jsonPrimitive.content
+                },
+                songLink = "https://open.spotify.com/track/${track["id"]!!.jsonPrimitive.content}",
+                albumCoverLink = track["album"]?.jsonObject
+                    ?.get("images")?.jsonArray?.firstOrNull()?.jsonObject
+                    ?.get("url")?.jsonPrimitive?.contentOrNull,
+                spotifyID = track["id"]!!.jsonPrimitive.content,
+            )
+        } catch (_: Exception) {
+            throw parseFailure(SpotifyOperation.TRACK_SEARCH)
         }
     }
 
@@ -300,42 +376,118 @@ class SpotifyAPI(
     }
 
     private suspend fun createClientToken() {
-        val tokenResponseForClient = spotifyRequest(SpotifyOperation.CLIENT_TOKEN) {
+        var tokenResponseForClient = requestClientToken(buildClientDataRequest())
+
+        repeat(MAX_CLIENT_TOKEN_ATTEMPTS) {
+            val payload = try {
+                Ktor.json.parseToJsonElement(tokenResponseForClient.bodyAsText()).jsonObject
+            } catch (_: Exception) {
+                throw parseFailure(SpotifyOperation.CLIENT_TOKEN)
+            }
+
+            when (payload["response_type"]?.jsonPrimitive?.contentOrNull) {
+                "RESPONSE_GRANTED_TOKEN_RESPONSE" -> {
+                    val granted = payload["granted_token"]?.jsonObject
+                        ?: throw parseFailure(SpotifyOperation.CLIENT_TOKEN)
+                    val token = granted["token"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotBlank() }
+                        ?: throw parseFailure(SpotifyOperation.CLIENT_TOKEN)
+                    val refreshAfterSeconds = granted.seconds("refresh_after_seconds")
+                        ?: granted.seconds("expires_after_seconds")
+                        ?: DEFAULT_CLIENT_TOKEN_REFRESH_SECONDS
+
+                    clientToken = token
+                    clientTokenRefreshAt = clock() + refreshAfterSeconds.coerceAtLeast(30) * 1_000
+                    return
+                }
+
+                "RESPONSE_CHALLENGES_RESPONSE" -> {
+                    val challengeSet = payload["challenges"]?.jsonObject
+                        ?: throw clientChallengeFailure()
+                    val state = challengeSet["state"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf { it.isNotBlank() }
+                        ?: throw clientChallengeFailure()
+                    val challenge = challengeSet["challenges"]?.jsonArray
+                        ?.firstOrNull { item ->
+                            item.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "CHALLENGE_HASH_CASH"
+                        }?.jsonObject ?: throw clientChallengeFailure()
+                    val parameters = challenge["evaluate_hashcash_parameters"]?.jsonObject
+                        ?: throw clientChallengeFailure()
+                    val length = parameters["length"]?.jsonPrimitive?.intOrNull
+                        ?: throw clientChallengeFailure()
+                    val prefix = parameters["prefix"]?.jsonPrimitive?.contentOrNull
+                        ?: throw clientChallengeFailure()
+                    val suffix = try {
+                        withContext(Dispatchers.Default) { solveSpotifyHashCash(prefix, length) }
+                    } catch (error: CancellationException) {
+                        throw error
+                    } catch (_: Exception) {
+                        throw clientChallengeFailure()
+                    }
+                    tokenResponseForClient = requestClientToken(buildChallengeAnswer(state, suffix))
+                }
+
+                else -> throw parseFailure(SpotifyOperation.CLIENT_TOKEN)
+            }
+        }
+
+        throw clientChallengeFailure()
+    }
+
+    private suspend fun requestClientToken(body: String): HttpResponse {
+        val response = spotifyRequest(SpotifyOperation.CLIENT_TOKEN) {
             client.post("https://clienttoken.spotify.com/v1/clienttoken") {
                 commonHeaders()
                 contentType(ContentType.Application.Json)
-                setBody(buildJsonObject {
-                    put("client_data", buildJsonObject {
-                        put("client_version", clientVersion!!)
-                        put("client_id", clientId!!)
-                        put("js_sdk_data", buildJsonObject {
-                            put("device_brand", "unknown")
-                            put("device_model", "unknown")
-                            put("os", "windows")
-                            put("os_version", "NT 10.0")
-                            put("device_id", deviceId!!)
-                            put("device_type", "computer")
-                        })
-                    })
-                }.toString())
+                setBody(body)
             }
         }
-        if (tokenResponseForClient.status == HttpStatusCode.TooManyRequests) {
-            throw SpotifyRateLimitException(diagnosticFor(tokenResponseForClient, SpotifyOperation.CLIENT_TOKEN, SpotifyFailureKind.RATE_LIMITED))
+        if (response.status == HttpStatusCode.TooManyRequests) {
+            throw SpotifyRateLimitException(diagnosticFor(response, SpotifyOperation.CLIENT_TOKEN, SpotifyFailureKind.RATE_LIMITED))
         }
-        if (tokenResponseForClient.status == HttpStatusCode.Unauthorized ||
-            tokenResponseForClient.status == HttpStatusCode.Forbidden
-        ) throw SpotifySessionExpiredException(diagnosticFor(tokenResponseForClient, SpotifyOperation.CLIENT_TOKEN, SpotifyFailureKind.AUTHENTICATION))
-        if (tokenResponseForClient.status != HttpStatusCode.OK) {
-            throw SpotifyServiceException(diagnosticFor(tokenResponseForClient, SpotifyOperation.CLIENT_TOKEN))
+        if (response.status == HttpStatusCode.Unauthorized || response.status == HttpStatusCode.Forbidden) {
+            throw SpotifySessionExpiredException(diagnosticFor(response, SpotifyOperation.CLIENT_TOKEN, SpotifyFailureKind.AUTHENTICATION))
         }
-        val clientTokenPayload = decodeOrServiceFailure<SpotifyClientTokenResponse>(tokenResponseForClient, SpotifyOperation.CLIENT_TOKEN)
-        if (clientTokenPayload.responseType != "RESPONSE_GRANTED_TOKEN_RESPONSE") throw parseFailure(SpotifyOperation.CLIENT_TOKEN)
-        val granted = clientTokenPayload.grantedToken ?: throw parseFailure(SpotifyOperation.CLIENT_TOKEN)
-
-        clientToken = granted.token
-        clientTokenRefreshAt = clock() + granted.refreshAfterSeconds.coerceAtLeast(30) * 1_000
+        if (response.status != HttpStatusCode.OK) {
+            throw SpotifyServiceException(diagnosticFor(response, SpotifyOperation.CLIENT_TOKEN))
+        }
+        return response
     }
+
+    private fun buildClientDataRequest(): String = buildJsonObject {
+        put("client_data", buildJsonObject {
+            put("client_version", clientVersion!!)
+            put("client_id", clientId!!)
+            put("js_sdk_data", buildJsonObject {
+                put("device_brand", "unknown")
+                put("device_model", "unknown")
+                put("os", "windows")
+                put("os_version", "NT 10.0")
+                put("device_id", deviceId!!)
+                put("device_type", "computer")
+            })
+        })
+    }.toString()
+
+    private fun buildChallengeAnswer(state: String, suffix: String): String = buildJsonObject {
+        put("request_type", "REQUEST_CHALLENGE_ANSWERS_REQUEST")
+        put("challenge_answers", buildJsonObject {
+            put("state", state)
+            put("answers", buildJsonArray {
+                add(buildJsonObject {
+                    put("challenge_type", "CHALLENGE_HASH_CASH")
+                    put("hash_cash", buildJsonObject { put("suffix", suffix) })
+                })
+            })
+        })
+    }.toString()
+
+    private fun JsonObject.seconds(name: String): Long? =
+        get(name)?.jsonPrimitive?.let { it.longOrNull ?: it.contentOrNull?.toLongOrNull() }
+
+    private fun clientChallengeFailure() = SpotifyServiceException(
+        SpotifyDiagnostic(SpotifyOperation.CLIENT_TOKEN, SpotifyFailureKind.CHALLENGE)
+    )
 
     private suspend fun getTimestampAndTotp(): Pair<Long, String> {
         if (totpGenerator == null) {
@@ -478,5 +630,7 @@ class SpotifyAPI(
             SpotifyOperation.LYRICS_REQUEST,
         )
         const val CONNECTION_TEST_LYRICS_TRACK_ID = "4Q0qVhFQa7j6jRKzo3HDmP"
+        const val MAX_CLIENT_TOKEN_ATTEMPTS = 3
+        const val DEFAULT_CLIENT_TOKEN_REFRESH_SECONDS = 300L
     }
 }
