@@ -148,8 +148,6 @@ fun HomeScreen(
                     scaffoldPadding = paddingValues,
                     isBatchDownload = isBatchDownload,
                     onBatchDownloadState = { onBatchDownload -> isBatchDownload = onBatchDownload },
-                    sharedTransitionScope = sharedTransitionScope,
-                    animatedVisibilityScope = animatedVisibilityScope
                 )
         }
     }
@@ -169,7 +167,7 @@ fun LoadingScreen() {
     }
 }
 
-@OptIn(ExperimentalSharedTransitionApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreenLoaded(
     selected: SnapshotStateList<String>,
@@ -178,8 +176,6 @@ fun HomeScreenLoaded(
     scaffoldPadding: PaddingValues,
     isBatchDownload: Boolean,
     onBatchDownloadState: (isBatchDownload: Boolean) -> Unit,
-    sharedTransitionScope: SharedTransitionScope,
-    animatedVisibilityScope: AnimatedVisibilityScope,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -313,10 +309,8 @@ fun HomeScreenLoaded(
                             imgUri = viewModel.playingSongAlbumArt,
                             filePath = viewModel.playingSongFilePath
                         ),
-                        sharedTransitionScope = sharedTransitionScope,
-                        animatedVisibilityScope = animatedVisibilityScope,
                         disableMarquee = viewModel.userSettingsController.disableMarquee,
-                        showPath = viewModel.userSettingsController.showPath
+                        showPath = viewModel.userSettingsController.showPath,
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     HorizontalDivider()
@@ -345,10 +339,8 @@ fun HomeScreenLoaded(
                         )
                     },
                     song = song,
-                    sharedTransitionScope = sharedTransitionScope,
-                    animatedVisibilityScope = animatedVisibilityScope,
                     disableMarquee = viewModel.userSettingsController.disableMarquee,
-                    showPath = viewModel.userSettingsController.showPath
+                    showPath = viewModel.userSettingsController.showPath,
                 )
             }
 

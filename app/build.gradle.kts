@@ -15,7 +15,7 @@ android {
         minSdk = 23
         //noinspection OldTargetApi
         targetSdk = 35
-        versionCode = 434
+        versionCode = 435
         versionName = "4.3.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -39,7 +39,7 @@ android {
     buildTypes {
         debug {
             applicationIdSuffix = ".personal"
-            versionNameSuffix = "-personal.2"
+            versionNameSuffix = "-personal.3"
         }
         release {
             isMinifyEnabled = true

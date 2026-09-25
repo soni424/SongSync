@@ -1,8 +1,5 @@
 package pl.lambada.songsync.ui.screens.home.components
 
-import androidx.compose.animation.AnimatedVisibilityScope
-import androidx.compose.animation.ExperimentalSharedTransitionApi
-import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -35,7 +32,8 @@ import pl.lambada.songsync.domain.model.Song
 import pl.lambada.songsync.ui.components.AnimatedText
 
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalSharedTransitionApi::class)
+// Keep the scrolling list out of shared-bounds lookahead measurement.
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun SongItem(
     filePath: String,
@@ -44,8 +42,6 @@ fun SongItem(
     onSelectionChanged: (Boolean) -> Unit,
     onNavigateToSongRequest: () -> Unit,
     song: Song,
-    sharedTransitionScope: SharedTransitionScope,
-    animatedVisibilityScope: AnimatedVisibilityScope,
     disableMarquee: Boolean = true,
     showPath: Boolean,
 ) {
@@ -75,66 +71,45 @@ fun SongItem(
             )
             .padding(vertical = 12.dp, horizontal = 24.dp)
     ) {
-        with(sharedTransitionScope) {
-            Column {
-                Row(
-                    modifier = Modifier.fillMaxHeight(if (showPath) 0.7f else 1f),
+        Column {
+            Row(
+                modifier = Modifier.fillMaxHeight(if (showPath) 0.7f else 1f),
+            ) {
+                Image(
+                    painter = painter,
+                    contentDescription = stringResource(id = R.string.album_cover),
+                    modifier = Modifier
+                        .fillMaxHeight()
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(20f))
+                )
+                Spacer(modifier = Modifier.width(12.dp))
+                Column(
+                    modifier = Modifier.fillMaxHeight(),
+                    verticalArrangement = Arrangement.SpaceAround
                 ) {
-                    Image(
-                        painter = painter,
-                        contentDescription = stringResource(id = R.string.album_cover),
-                        modifier = Modifier
-                            .sharedBounds(
-                                sharedContentState = rememberSharedContentState(key = "cover$filePath"),
-                                animatedVisibilityScope = animatedVisibilityScope,
-                                clipInOverlayDuringTransition = sharedTransitionScope.OverlayClip(
-                                    RoundedCornerShape(20f)
-                                )
-                            )
-                            .fillMaxHeight()
-                            .aspectRatio(1f)
-                            .clip(RoundedCornerShape(20f))
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(
-                        modifier = Modifier.fillMaxHeight(),
-                        verticalArrangement = Arrangement.SpaceAround
-                    ) {
-                        AnimatedText(
-                            animate = !disableMarquee,
-                            text = songName,
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.contentColorFor(bgColor),
-                            modifier = Modifier.sharedBounds(
-                                sharedContentState = rememberSharedContentState(key = "title$filePath"),
-                                animatedVisibilityScope = animatedVisibilityScope
-                            )
-                        )
-                        AnimatedText(
-                            animate = !disableMarquee,
-                            text = artists,
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.contentColorFor(bgColor),
-                            modifier = Modifier.sharedBounds(
-                                sharedContentState = rememberSharedContentState(key = "artist$filePath"),
-                                animatedVisibilityScope = animatedVisibilityScope
-                            )
-                        )
-                    }
-                }
-                if (showPath) {
-                    Spacer(modifier = Modifier.height(4.dp))
                     AnimatedText(
                         animate = !disableMarquee,
-                        text = filePath.replace(".nowplaying", ""),
-                        fontSize = 12.sp,
+                        text = songName,
+                        fontSize = 16.sp,
                         color = MaterialTheme.colorScheme.contentColorFor(bgColor),
-                        modifier = Modifier.sharedBounds(
-                            sharedContentState = rememberSharedContentState(key = "path$filePath"),
-                            animatedVisibilityScope = animatedVisibilityScope
-                        )
+                    )
+                    AnimatedText(
+                        animate = !disableMarquee,
+                        text = artists,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.contentColorFor(bgColor),
                     )
                 }
+            }
+            if (showPath) {
+                Spacer(modifier = Modifier.height(4.dp))
+                AnimatedText(
+                    animate = !disableMarquee,
+                    text = filePath.replace(".nowplaying", ""),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.contentColorFor(bgColor),
+                )
             }
         }
     }
