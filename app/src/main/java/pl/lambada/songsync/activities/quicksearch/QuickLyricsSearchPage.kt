@@ -183,7 +183,7 @@ fun QuickLyricsSearchPage(
                                         .fillMaxWidth()
                                         .heightIn(max = 300.dp),
                                     stacktrace = animatedPageState.exception.message
-                                        ?: animatedPageState.exception.stackTrace.toString()
+                                        ?: stringResource(R.string.unknown_error_occurred)
                                 )
                             }
                         }

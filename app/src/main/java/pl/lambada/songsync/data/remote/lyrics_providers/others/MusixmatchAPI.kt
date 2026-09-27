@@ -1,17 +1,20 @@
 package pl.lambada.songsync.data.remote.lyrics_providers.others
 
 import io.ktor.client.request.get
+import io.ktor.client.HttpClient
 import io.ktor.client.statement.bodyAsText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.others.MusixmatchSearchResponse
 import pl.lambada.songsync.util.EmptyQueryException
-import pl.lambada.songsync.util.networking.Ktor.client
+import pl.lambada.songsync.util.NoTrackFoundException
+import pl.lambada.songsync.util.ProviderHttpException
+import pl.lambada.songsync.util.networking.Ktor
 import pl.lambada.songsync.util.networking.Ktor.json
 import java.net.URLEncoder
 
-class MusixmatchAPI {
+class MusixmatchAPI(private val client: HttpClient = Ktor.client) {
     private val baseURL = "http://158.180.60.95"
 
     /**
@@ -40,10 +43,9 @@ class MusixmatchAPI {
         val response = client.get(
             "$baseURL/v2/full?artist=$artistName&track=$songName"
         )
+        if (response.status.value == 404) throw NoTrackFoundException()
+        if (response.status.value !in 200..299) throw ProviderHttpException(response.status.value)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
-
-        if (response.status.value !in 200..299)
-            return null
 
         val result = json.decodeFromString<MusixmatchSearchResponse>(responseBody)
 
@@ -78,10 +80,9 @@ class MusixmatchAPI {
         val response = client.get(
             "$baseURL/v2/full?id=$songId&lang=$language"
         )
+        if (response.status.value == 404) return null
+        if (response.status.value !in 200..299) throw ProviderHttpException(response.status.value)
         val responseBody = response.bodyAsText(Charsets.UTF_8)
-
-        if (response.status.value !in 200..299)
-            return null
 
         val result = json.decodeFromString<MusixmatchSearchResponse>(responseBody)
 

@@ -1,6 +1,5 @@
 package pl.lambada.songsync.data.remote.lyrics_providers.others
 
-import android.util.Log
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
@@ -10,7 +9,6 @@ import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.others.NeteaseLyricsResponse
 import pl.lambada.songsync.domain.model.lyrics_providers.others.NeteaseResponse
 import pl.lambada.songsync.util.EmptyQueryException
-import pl.lambada.songsync.util.InternalErrorException
 import pl.lambada.songsync.util.networking.Ktor.client
 import pl.lambada.songsync.util.networking.Ktor.json
 
@@ -62,12 +60,7 @@ class NeteaseAPI {
         if (responseBody == "[]" || response.status.value !in 200..299 || responseBody.contains("\"songCount\":0"))
             return null
 
-        val neteaseResponse: NeteaseResponse
-        try {
-            neteaseResponse = json.decodeFromString(responseBody)
-        } catch (e: kotlinx.serialization.MissingFieldException) {
-            throw InternalErrorException(Log.getStackTraceString(e))
-        }
+        val neteaseResponse = json.decodeFromString<NeteaseResponse>(responseBody)
 
         val artists = neteaseResponse.result.songs[0].artists.joinToString(", ") { it.name }
 

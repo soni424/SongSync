@@ -14,6 +14,10 @@ import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.util.ResourceState
 import pl.lambada.songsync.util.ScreenState
+import pl.lambada.songsync.util.EmptyQueryException
+import pl.lambada.songsync.util.NoTrackFoundException
+import pl.lambada.songsync.util.ProviderServiceException
+import pl.lambada.songsync.util.SpotifyProviderException
 import pl.lambada.songsync.util.ext.getVersion
 import pl.lambada.songsync.util.parseLyrics
 
@@ -62,7 +66,7 @@ class QuickLyricsSearchViewModel(
                 val exception = songInfoCall.exceptionOrNull()
                 updateScreenState(
                     ScreenState.Error(
-                        exception ?: Exception("An unknown error has occurred")
+                        Exception(safeErrorMessage(exception, context))
                     )
                 )
             }
@@ -98,8 +102,7 @@ class QuickLyricsSearchViewModel(
                 val exception = lyricsCall.exceptionOrNull()
                 updateLyricsState(
                     ResourceState.Error(
-                        exception?.localizedMessage
-                            ?: (context.getString(R.string.unknown) + exception?.stackTrace.toString())
+                        safeErrorMessage(exception, context)
                     )
                 )
             }
@@ -116,6 +119,13 @@ class QuickLyricsSearchViewModel(
             userSettingsController.multiPersonWordByWord,
             userSettingsController.unsyncedFallbackMusixmatch
         )
+
+    private fun safeErrorMessage(error: Throwable?, context: Context): String = when (error) {
+        is ProviderServiceException, is SpotifyProviderException -> error.message.orEmpty()
+        is NoTrackFoundException -> context.getString(R.string.no_results)
+        is EmptyQueryException -> context.getString(R.string.invalid_query)
+        else -> context.getString(R.string.unknown_error_occurred)
+    }
 
     private fun updateScreenState(screenState: ScreenState<SongInfo>) {
         if (screenState != mutableState.value.screenState) {

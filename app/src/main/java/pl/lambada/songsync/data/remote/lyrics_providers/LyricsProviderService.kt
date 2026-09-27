@@ -1,6 +1,6 @@
 package pl.lambada.songsync.data.remote.lyrics_providers
 
-import android.util.Log
+import kotlinx.coroutines.CancellationException
 import pl.lambada.songsync.data.remote.lyrics_providers.apple.AppleAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.others.LRCLibAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.others.MusixmatchAPI
@@ -9,7 +9,6 @@ import pl.lambada.songsync.data.remote.lyrics_providers.others.QQMusicAPI
 import pl.lambada.songsync.data.remote.lyrics_providers.spotify.SpotifyAPI
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.util.EmptyQueryException
-import pl.lambada.songsync.util.InternalErrorException
 import pl.lambada.songsync.util.NoTrackFoundException
 import pl.lambada.songsync.util.Providers
 import pl.lambada.songsync.util.SpotifyProviderException
@@ -18,6 +17,9 @@ import pl.lambada.songsync.util.SpotifyDiagnostic
 import pl.lambada.songsync.util.SpotifyFailureKind
 import pl.lambada.songsync.util.SpotifyOperation
 import pl.lambada.songsync.util.SpotifyServiceException
+import pl.lambada.songsync.util.ProviderOperation
+import pl.lambada.songsync.util.ProviderServiceException
+import pl.lambada.songsync.util.providerFailure
 import java.io.FileNotFoundException
 import java.net.UnknownHostException
 
@@ -26,6 +28,7 @@ import java.net.UnknownHostException
  */
 class LyricsProviderService(
     private val spotifyAPI: SpotifyAPI,
+    private val musixmatchAPI: MusixmatchAPI = MusixmatchAPI(),
 ) {
     private var spotifyTrackID = ""
 
@@ -73,7 +76,7 @@ class LyricsProviderService(
         FileNotFoundException::class,
         NoTrackFoundException::class,
         EmptyQueryException::class,
-        InternalErrorException::class
+        ProviderServiceException::class
     )
     suspend fun getSongInfo(query: SongInfo, offset: Int = 0, provider: Providers): SongInfo? {
         return try {
@@ -98,22 +101,23 @@ class LyricsProviderService(
                     appleID = it?.appleID ?: 0
                 } ?: throw NoTrackFoundException()
 
-                Providers.MUSIXMATCH -> MusixmatchAPI().getSongInfo(query, offset).also {
+                Providers.MUSIXMATCH -> musixmatchAPI.getSongInfo(query, offset).also {
                     musixmatchSongInfo = it
                 } ?: throw NoTrackFoundException()
             }
         } catch (e: Exception) {
             when (e) {
-                is InternalErrorException,
+                is CancellationException,
                 is NoTrackFoundException,
                 is EmptyQueryException,
-                is SpotifyProviderException -> throw e
+                is SpotifyProviderException,
+                is ProviderServiceException -> throw e
                 else -> if (provider == Providers.SPOTIFY) {
                     throw SpotifyServiceException(
                         SpotifyDiagnostic(SpotifyOperation.TRACK_SEARCH, SpotifyFailureKind.UNEXPECTED)
                     )
                 } else {
-                    throw InternalErrorException(Log.getStackTraceString(e))
+                    throw providerFailure(provider, ProviderOperation.SEARCH, e)
                 }
             }
         }
@@ -134,35 +138,34 @@ class LyricsProviderService(
         multiPersonWordByWord: Boolean = false,
         unsyncedFallbackMusixmatch: Boolean = true
     ): String? {
-        return when (provider) {
-            Providers.SPOTIFY -> try {
-                spotifyAPI.getSyncedLyrics(spotifyTrackID)
-            } catch (error: SpotifyProviderException) {
-                throw error
-            } catch (_: Exception) {
-                throw SpotifyServiceException(
-                    SpotifyDiagnostic(SpotifyOperation.LYRICS_REQUEST, SpotifyFailureKind.UNEXPECTED)
+        return try {
+            when (provider) {
+                Providers.SPOTIFY -> spotifyAPI.getSyncedLyrics(spotifyTrackID)
+                Providers.LRCLIB -> LRCLibAPI().getSyncedLyrics(lrcLibID)
+                Providers.NETEASE -> NeteaseAPI().getSyncedLyrics(
+                    neteaseID, includeTranslationNetEase, includeRomanizationNetEase
+                )
+                Providers.QQMUSIC -> QQMusicAPI().getSyncedLyrics(qqPayload, multiPersonWordByWord)
+                Providers.APPLE -> appleAPI.getSyncedLyrics(appleID, multiPersonWordByWord)
+                Providers.MUSIXMATCH -> musixmatchAPI.getLyrics(
+                    musixmatchSongInfo, unsyncedFallbackMusixmatch
                 )
             }
-            Providers.LRCLIB -> LRCLibAPI().getSyncedLyrics(lrcLibID)
-            Providers.NETEASE -> NeteaseAPI().getSyncedLyrics(
-                neteaseID, includeTranslationNetEase, includeRomanizationNetEase
+        } catch (error: Exception) {
+            if (error is CancellationException || error is SpotifyProviderException || error is ProviderServiceException) throw error
+            if (provider == Providers.SPOTIFY) throw SpotifyServiceException(
+                SpotifyDiagnostic(SpotifyOperation.LYRICS_REQUEST, SpotifyFailureKind.UNEXPECTED)
             )
-
-            Providers.QQMUSIC -> QQMusicAPI().getSyncedLyrics(qqPayload, multiPersonWordByWord)
-
-            Providers.APPLE -> appleAPI.getSyncedLyrics(
-                appleID, multiPersonWordByWord
-            )
-
-            Providers.MUSIXMATCH -> MusixmatchAPI().getLyrics(
-                musixmatchSongInfo,
-                unsyncedFallbackMusixmatch
-            )
+            throw providerFailure(provider, ProviderOperation.LYRICS, error)
         }
     }
 
     suspend fun getLyricsInLanguage(songId: Long, language: String): String? {
-        return MusixmatchAPI().getLyricsInLanguage(songId, language)
+        return try {
+            musixmatchAPI.getLyricsInLanguage(songId, language)
+        } catch (error: Exception) {
+            if (error is CancellationException) throw error
+            throw providerFailure(Providers.MUSIXMATCH, ProviderOperation.LYRICS, error)
+        }
     }
 }

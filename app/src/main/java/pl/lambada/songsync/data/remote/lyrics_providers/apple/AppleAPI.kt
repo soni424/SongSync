@@ -9,6 +9,7 @@ import pl.lambada.songsync.data.remote.PaxMusicHelper
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.domain.model.lyrics_providers.others.AppleMusicSearchResponse
 import pl.lambada.songsync.util.EmptyQueryException
+import pl.lambada.songsync.util.ProviderHttpException
 import pl.lambada.songsync.util.networking.Ktor.client
 import pl.lambada.songsync.util.networking.Ktor.json
 import java.net.URLEncoder
@@ -35,7 +36,7 @@ class AppleAPI {
         if (search.isBlank())
             throw EmptyQueryException()
 
-        return try {
+        return run {
             val token = tokenManager.getToken()
             
             val response = client.get(
@@ -58,21 +59,17 @@ class AppleAPI {
                 header("x-apple-renewal", "true")
             }
 
-            val responseBody = response.bodyAsText(Charsets.UTF_8)
-
             if (response.status.value !in 200..299) {
                 // Token might be expired, clear it and retry once
                 if (response.status.value == 401) {
                     tokenManager.clearToken()
                 }
-                return null
+                if (response.status.value == 404) return null
+                throw ProviderHttpException(response.status.value)
             }
+            val responseBody = response.bodyAsText(Charsets.UTF_8)
 
-            val searchResponse = try {
-                json.decodeFromString<AppleMusicSearchResponse>(responseBody)
-            } catch (e: Exception) {
-                return null
-            }
+            val searchResponse = json.decodeFromString<AppleMusicSearchResponse>(responseBody)
 
             val songs = searchResponse.results.songs?.data ?: return null
             
@@ -95,9 +92,6 @@ class AppleAPI {
                 albumCoverLink = artworkUrl,
                 appleID = songId.toLongOrNull() ?: return null
             )
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
         }
     }
 

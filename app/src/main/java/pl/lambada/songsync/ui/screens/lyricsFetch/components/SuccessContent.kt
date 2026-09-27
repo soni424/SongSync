@@ -36,6 +36,8 @@ import pl.lambada.songsync.util.SpotifyServiceException
 import pl.lambada.songsync.util.SpotifySessionExpiredException
 import pl.lambada.songsync.util.SpotifyUnsyncedLyricsException
 import pl.lambada.songsync.util.SpotifyProviderException
+import pl.lambada.songsync.util.ProviderServiceException
+import pl.lambada.songsync.util.LyricsUnavailableException
 import pl.lambada.songsync.util.ext.getVersion
 import pl.lambada.songsync.util.showToast
 
@@ -139,16 +141,29 @@ fun SharedTransitionScope.SuccessContent(
                         is SpotifyUnsyncedLyricsException -> R.string.spotify_unsynchronized
                         is SpotifyRateLimitException -> R.string.spotify_rate_limited
                         is SpotifyServiceException -> R.string.spotify_provider_unavailable
-                        else -> R.string.this_track_has_no_lyrics
+                        is LyricsUnavailableException -> R.string.this_track_has_no_lyrics
+                        else -> R.string.unknown_error_occurred
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(stringResource(message))
                         val spotifyError = it.exception as? SpotifyProviderException
+                        val providerError = it.exception as? ProviderServiceException
+                        if (providerError != null) Text(providerError.message.orEmpty())
+                        else Text(stringResource(message))
                         if (spotifyError != null) {
                             Text(stringResource(R.string.spotify_diagnostic_code, spotifyError.diagnostic.code))
                             OutlinedButton(onClick = {
                                 clipboardManager.setText(
                                     AnnotatedString(spotifyError.diagnostic.toReport(context.getVersion()))
+                                )
+                                showToast(context, R.string.spotify_diagnostic_copied)
+                            }) {
+                                Text(stringResource(R.string.spotify_copy_diagnostic))
+                            }
+                        }
+                        if (providerError != null) {
+                            OutlinedButton(onClick = {
+                                clipboardManager.setText(
+                                    AnnotatedString(providerError.diagnostic.toReport(context.getVersion()))
                                 )
                                 showToast(context, R.string.spotify_diagnostic_copied)
                             }) {

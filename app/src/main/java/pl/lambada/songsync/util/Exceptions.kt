@@ -1,8 +1,8 @@
 package pl.lambada.songsync.util
 
 class NoTrackFoundException : Exception()
-class InternalErrorException(msg: String) : Exception(msg)
 class EmptyQueryException : Exception()
+class LyricsUnavailableException : Exception()
 
 enum class SpotifyOperation(val code: String) {
     BOOTSTRAP("BOOTSTRAP"),

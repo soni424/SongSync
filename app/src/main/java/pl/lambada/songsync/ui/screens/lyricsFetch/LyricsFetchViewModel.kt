@@ -15,6 +15,7 @@ import pl.lambada.songsync.data.remote.lyrics_providers.LyricsProviderService
 import pl.lambada.songsync.domain.model.SongInfo
 import pl.lambada.songsync.ui.LocalSong
 import pl.lambada.songsync.util.embedLyricsInFile
+import pl.lambada.songsync.util.LyricsUnavailableException
 import pl.lambada.songsync.util.ext.getVersion
 import pl.lambada.songsync.util.generateLrcContent
 import pl.lambada.songsync.util.isLegacyFileAccessRequired
@@ -113,7 +114,7 @@ class LyricsFetchViewModel(
                 val lyrics = getSyncedLyrics(
                     title,
                     artist
-                ) ?: throw NullPointerException("Lyrics result is null")
+                ) ?: throw LyricsUnavailableException()
 
                 lyricsFetchState = LyricsFetchState.Success(lyrics)
             } catch (e: Exception) {

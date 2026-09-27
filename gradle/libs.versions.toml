@@ -18,7 +18,7 @@ navigation-runtime-ktx = "2.8.3"
 preference = "1.2.1"
 ktor = "2.3.6"
 datastore = "1.1.1"
-taglib = "1.0.0-alpha18"
+taglib = "1.0.0-alpha25"
 kotlin-onetimepassword = "2.4.1"
 
 [libraries]

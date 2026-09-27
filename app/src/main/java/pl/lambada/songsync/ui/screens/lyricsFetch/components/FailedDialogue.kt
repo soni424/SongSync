@@ -15,6 +15,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import pl.lambada.songsync.R
 import pl.lambada.songsync.util.EmptyQueryException
+import pl.lambada.songsync.util.ProviderServiceException
 import pl.lambada.songsync.util.NoTrackFoundException
 import pl.lambada.songsync.util.SpotifyAuthenticationRequiredException
 import pl.lambada.songsync.util.SpotifyLyricsNotFoundException
@@ -43,16 +44,20 @@ fun FailedDialogue(
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
     val spotifyError = exception as? SpotifyProviderException
+    val providerError = exception as? ProviderServiceException
     val needsSettings = exception is SpotifyAuthenticationRequiredException ||
         exception is SpotifySessionExpiredException
     AlertDialog(
         onDismissRequest = onDismissRequest,
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (spotifyError != null) {
+                if (spotifyError != null || providerError != null) {
                     OutlinedButton(onClick = {
                         clipboardManager.setText(
-                            AnnotatedString(spotifyError.diagnostic.toReport(context.getVersion()))
+                            AnnotatedString(
+                                spotifyError?.diagnostic?.toReport(context.getVersion())
+                                    ?: providerError!!.diagnostic.toReport(context.getVersion())
+                            )
                         )
                         showToast(context, R.string.spotify_diagnostic_copied)
                     }) {
@@ -78,7 +83,8 @@ fun FailedDialogue(
                     Text(stringResource(R.string.spotify_provider_unavailable))
                     Text(stringResource(R.string.spotify_diagnostic_code, exception.diagnostic.code))
                 }
-                else -> Text(exception.message ?: stringResource(R.string.unknown_error_occurred))
+                is ProviderServiceException -> Text(exception.message.orEmpty())
+                else -> Text(stringResource(R.string.unknown_error_occurred))
             }
         }
     )
