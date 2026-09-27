@@ -19,7 +19,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
@@ -39,7 +42,6 @@ import pl.lambada.songsync.util.SpotifyAuthenticationRequiredException
 import pl.lambada.songsync.util.SpotifySessionExpiredException
 import pl.lambada.songsync.util.SpotifyProviderException
 import pl.lambada.songsync.util.SpotifyRateLimitException
-import pl.lambada.songsync.util.ext.toLrcFile
 import java.io.File
 import java.util.UUID
 
@@ -65,10 +67,10 @@ class HomeViewModel(
 
     // Filter settings
     private var cachedFolders: MutableList<String>? = null
-    private var hideFolders = userSettingsController.blacklistedFolders.isNotEmpty()
 
     // filtered folders/lyrics songs
-    private var _cachedFilteredSongs = MutableStateFlow<List<Song>>(emptyList())
+    private var _cachedFilteredSongs = MutableStateFlow<List<Song>?>(null)
+    private var filterJob: Job? = null
 
     // searching
     private var _searchResults = MutableStateFlow<List<Song>>(emptyList())
@@ -76,7 +78,7 @@ class HomeViewModel(
     var displaySongs by mutableStateOf(
         when {
             searchQuery.isNotEmpty() -> _searchResults.value
-            _cachedFilteredSongs.value.isNotEmpty() -> _cachedFilteredSongs.value
+            _cachedFilteredSongs.value != null -> _cachedFilteredSongs.value!!
             else -> allSongs ?: listOf()
         }
     )
@@ -101,12 +103,8 @@ class HomeViewModel(
             .filterNotNull()
             // simple .combine wasn't enough apparently, so im using this
             .flatMapLatest { all ->
-                _cachedFilteredSongs.combine(_searchResults) { filtered, searchResults ->
-                    when {
-                        searchQuery.isNotEmpty() -> searchResults
-                        filtered.isNotEmpty() -> filtered
-                        else -> all
-                    }
+                combine(_cachedFilteredSongs, _searchResults, snapshotFlow { searchQuery }) { filtered, searchResults, query ->
+                    displayedSongList(all, filtered, searchResults, query.isNotEmpty())
                 }
             }.collect { newDisplaySongs ->
                 displaySongs = newDisplaySongs
@@ -172,7 +170,7 @@ class HomeViewModel(
             }
             cursor?.close()
             cachedSongs = songs
-            viewModelScope.launch { filterSongs() }
+            filterSongs()
             viewModelScope.launch { updatePlayingSongInfo(context) }
             cachedSongs!!
         }
@@ -185,12 +183,12 @@ class HomeViewModel(
     fun updateSearchResults(query: String) {
         viewModelScope.launch(Dispatchers.IO) {
             if (query.isEmpty()) {
-                _searchResults.value = _cachedFilteredSongs.value
+                _searchResults.value = _cachedFilteredSongs.value ?: cachedSongs.orEmpty()
                 return@launch
             }
 
             val data: List<Song> = when {
-                _cachedFilteredSongs.value.isNotEmpty() -> _cachedFilteredSongs.value
+                _cachedFilteredSongs.value != null -> _cachedFilteredSongs.value!!
                 cachedSongs != null -> cachedSongs!!
                 else -> { return@launch }
             }
@@ -225,44 +223,19 @@ class HomeViewModel(
         }
     }
 
-    /**
-     * Filter songs based on user's preferences.
-     * @return A list of songs depending on the user's preferences. If no preferences are set, null is returned, so app will use all songs.
-     */
-    fun filterSongs() = viewModelScope.launch {
-        hideFolders = userSettingsController.blacklistedFolders.isNotEmpty()
-
-        when {
-            userSettingsController.hideLyrics && hideFolders -> {
-                _cachedFilteredSongs.value = cachedSongs!!
-                    .filter {
-                        it.filePath.toLrcFile()?.exists() != true && !userSettingsController.blacklistedFolders.contains(
-                            it.filePath!!.substring(
-                                0, it.filePath.lastIndexOf("/")
-                            )
-                        )
-                    }
-            }
-
-            userSettingsController.hideLyrics -> {
-                _cachedFilteredSongs.value = cachedSongs!!
-                    .filter { it.filePath.toLrcFile()?.exists() != true }
-            }
-
-            hideFolders -> {
-                _cachedFilteredSongs.value = cachedSongs!!.filter {
-                    !userSettingsController.blacklistedFolders.contains(
-                        it.filePath!!.substring(
-                            0,
-                            it.filePath.lastIndexOf("/")
-                        )
-                    )
-                }
-            }
-
-            else -> {
-                _cachedFilteredSongs.value = emptyList()
-            }
+    /** Filter the cached library on a background dispatcher, including embedded metadata. */
+    fun filterSongs() {
+        filterJob?.cancel()
+        filterJob = viewModelScope.launch(Dispatchers.IO) {
+            val hideLyrics = userSettingsController.hideLyrics
+            val blacklistedFolders = userSettingsController.blacklistedFolders
+            val songs = cachedSongs ?: return@launch
+            val filtered = if (hideLyrics || blacklistedFolders.any(String::isNotEmpty)) {
+                filterSongList(songs, hideLyrics, blacklistedFolders, ::hasEmbeddedLyrics)
+            } else null
+            currentCoroutineContext().ensureActive()
+            _cachedFilteredSongs.value = filtered
+            if (searchQuery.isNotEmpty()) updateSearchResults(searchQuery)
         }
     }
 
@@ -351,7 +324,10 @@ class HomeViewModel(
             viewModel = this@HomeViewModel,
             context = context,
             onProgressUpdate = onProgressUpdate,
-            onDownloadComplete = onDownloadComplete,
+            onDownloadComplete = {
+                filterSongs()
+                onDownloadComplete()
+            },
             onRateLimitReached = onRateLimitReached,
         )
     }
